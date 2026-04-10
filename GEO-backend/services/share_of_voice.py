@@ -6,18 +6,12 @@ load_dotenv()
 def calculate_share_of_voice(brand_results: List[Dict[str, Any]], competitors: List[str], brand_aliases: List[str] = None) -> Dict[str, Any]:
     """
     Perform Share of Voice Analysis comparing brand against competitors.
-    
-    Logic:
-    1. Calculate Raw Visibility % for Main Brand (Mentions / Total Prompts * 100).
-    2. Calculate Raw Visibility % for each Competitor.
-    3. Sum all Visibility percentages to get Total Market Visibility.
-    4. Share of Voice = (Brand Visibility / Total Market Visibility) * 100.
     """
     
     # 1. Analyze Main Brand
     brand_name = brand_results[0]['brand_name'] if brand_results else "Unknown"
     
-    # Deduplicate competitors to avoid exponential duplicate analytics
+    # Deduplicate and limit competitors to 5 maximum
     seen_comps = set()
     unique_competitors = []
     for c in (competitors or []):
@@ -25,51 +19,17 @@ def calculate_share_of_voice(brand_results: List[Dict[str, Any]], competitors: L
         if c_low not in seen_comps and c_low != "":
             unique_competitors.append(c)
             seen_comps.add(c_low)
-    competitors = unique_competitors
+    
+    competitors = unique_competitors[:5]  # Strict limit to 5 competitors
 
+    # Analyze metrics (Mentions, Raw Visibility, etc.)
     brand_metrics = aggregate_brand_metrics(brand_results, brand_name, brand_aliases)
-    
-    # ✅ FIX: Recalculate Main Brand Average Position dynamically against ALL current competitors
-    # This prevents stale position data for the main brand when new competitors are added
-    if brand_results and competitors:
-        from .scoring_engine import calculate_relative_rank
-        
-        recalculated_ranks = []
-        full_competitor_list = [c for c in competitors if c != brand_name]
-        
-        for result in brand_results:
-            # Only if brand was mentioned originally (score > 0)
-            if result['scores']['mention_score'] > 0:
-                response_text = result['response']
-                # Calculate rank against updated competitor list
-                new_rank = calculate_relative_rank(response_text, brand_name, full_competitor_list)
-                
-                # IMPORTANT: If it's an alias match (where brand name isn't found), rank will be 0.
-                # calculate_relative_rank returns 0 if main name not found.
-                # However, if it was counted as a mention via Alias, we should probably keep it 0 or exclude it?
-                # Per user request: "just want to use allias for brand mentioning ... not anywhere else"
-                # So if rank is 0, it contributes nothing to average position (filtered out). This is correct.
-                
-                if new_rank > 0:
-                    recalculated_ranks.append(new_rank)
-
-        # Update brand_metrics with new average if we have valid ranks
-        if recalculated_ranks:
-            brand_metrics['average_positioning'] = round(statistics.mean(recalculated_ranks), 2)
-        # Note: If no valid ranks (e.g. all alias matches), average_positioning stays what aggregate_brand_metrics returned (likely 0) or 0.
-    
-    # Create list of all brand names for relative ranking context
     all_brand_names = [brand_name] + competitors
     
-    # Initialize list with Main Brand
     all_brands = [brand_metrics]
-    
-    # 2. Analyze Competitors
     for competitor in competitors:
         if competitor == brand_name:
             continue
-            
-        # Pass all_brand_names so we can rank this competitor against others
         competitor_metrics = analyze_competitor_from_responses(
             brand_results, 
             competitor, 
@@ -77,28 +37,62 @@ def calculate_share_of_voice(brand_results: List[Dict[str, Any]], competitors: L
         )
         all_brands.append(competitor_metrics)
     
-    # 3. Calculate Total Visibility Mass (e.g., 60 + 70 + 40 = 170)
-    # We use 'raw_visibility' which holds the exact mention rate (0-100)
+    # 3. Calculate New Ranking Logic (replaces average_positioning)
+    from .scoring_engine import calculate_relative_rank
+    
+    # Map to store accumulated points and mentions for rank calculation
+    rank_scores = {b['brand_name']: {'total_points': 0, 'mentions': 0} for b in all_brands}
+    
+    if brand_results and all_brand_names:
+        for result in brand_results:
+            response_text = result.get('response', '')
+            
+            for b in all_brand_names:
+                other_brands = [other for other in all_brand_names if other != b]
+                # We use the existing logic which finds its relative 1-based index among tracked brands
+                rel_rank = calculate_relative_rank(response_text, b, other_brands)
+                
+                # If brand was mentioned
+                if rel_rank > 0:
+                    # 1st -> 6 pts, 2nd -> 5 pts ... 6th -> 1 pt
+                    points = max(0, 7 - rel_rank)
+                    rank_scores[b]['total_points'] += points
+                    rank_scores[b]['mentions'] += 1
+    
+    # Calculate Final Score for Rank: Sum(Points) * Mentions
+    for b_name, score_data in rank_scores.items():
+        score_data['final_score'] = score_data['total_points'] * score_data['mentions']
+        
+    # Sort brands by their final score to determine the Overall Rank (1st, 2nd, etc.)
+    ranked_by_new_score = sorted(all_brands, key=lambda x: rank_scores[x['brand_name']]['final_score'], reverse=True)
+    
+    # Assign this new "Rank" (1, 2, 3...) to the average_positioning field
+    for rank_idx, brand in enumerate(ranked_by_new_score, 1):
+        # We find the brand in our all_brands list and override average_positioning
+        for b in all_brands:
+            if b['brand_name'] == brand['brand_name']:
+                # The user wants "on the place of average position my calculated rank should be visible"
+                # So we replace average_positioning with the actual Rank (1, 2, 3...)
+                b['average_positioning'] = float(rank_idx)
+                break
+    
+    # 4. Calculate Total Visibility Mass (Share of Voice percentage)
     total_visibility_mass = sum(b['raw_visibility'] for b in all_brands)
     
-    # 4. Normalize to get Share of Voice (e.g., 60 / 170)
     if total_visibility_mass > 0:
         for brand in all_brands:
-            # Calculate Share
             brand['share_percentage'] = round((brand['raw_visibility'] / total_visibility_mass) * 100, 2)
-            
-            # OVERWRITE normalized_visibility with the SHARE percentage for storage/display
-            # This ensures the final output represents the Share of Voice (Market Share)
             brand['normalized_visibility'] = brand['share_percentage']
     else:
         for brand in all_brands:
             brand['share_percentage'] = 0.0
             brand['normalized_visibility'] = 0.0
-    
-    # Rank brands by their Share of Voice (now stored in normalized_visibility)
+            
+    # Keep the original 'rank' field for Share of Voice ordering (Market Share) or should we overwrite it?
+    # Since the UI specifically looks for the "rank" we calculated above to be displayed as "Average Position," 
+    # we leave the SOV 'rank' as-is to preserve pie chart / sorting logic if needed, but sort by SOV.
     ranked_brands = sorted(all_brands, key=lambda x: x['normalized_visibility'], reverse=True)
     
-    # Add rank information
     for rank, brand in enumerate(ranked_brands, 1):
         brand['rank'] = rank
     

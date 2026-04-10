@@ -364,7 +364,7 @@ def extract_relevant_html_for_skill(html: str, skill: str) -> str:
 def evaluate_seo_skills(
     url: str,
     skills: List[str],
-    max_pages: int = 30,
+    max_pages: int = 1,
     user_id: str = None
 ) -> Dict[str, Any]:
     """
@@ -405,7 +405,7 @@ def evaluate_seo_skills(
         )
 
     # Hard cap on max_pages matching crawler limit
-    max_pages = min(max_pages, 30)
+    max_pages = min(max_pages, 1)
 
     logger.info(f"Starting SEO crawl for {url} | max_pages={max_pages} | skills={valid_skills}")
     pages = crawl_site(url, max_pages)

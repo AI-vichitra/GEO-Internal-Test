@@ -15,9 +15,9 @@ DEFAULT_HEADERS = {
     "Connection": "keep-alive",
 }
 
-MAX_SUPPORTED_PAGES = 30
+MAX_SUPPORTED_PAGES = 1
 
-def fetch_page(url: str, timeout: int = 30) -> dict:
+def fetch_page(url: str, timeout: int = 1) -> dict:
     """Fetch HTML content natively without Bright Data."""
     try:
         response = requests.get(url, headers=DEFAULT_HEADERS, timeout=timeout, allow_redirects=True)

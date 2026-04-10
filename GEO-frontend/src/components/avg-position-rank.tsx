@@ -91,7 +91,7 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
             <div className="px-4 py-3 border-b border-gray-200">
                 <div className="flex items-center justify-between">
                     <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wider">
-                        Average Position Rank
+                        Competitor Analysis
                     </h3>
                     <TooltipProvider>
                         <Tooltip>
@@ -99,7 +99,7 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
                                 <HelpCircle className="h-3 w-3 text-gray-400" />
                             </TooltipTrigger>
                             <TooltipContent className="max-w-[200px] bg-white border-gray-200 text-gray-700 text-xs shadow-lg">
-                                Your rank based on Average Position compared to competitors.
+                                Your calculated overall rank among competitors based on historical visibility score.
                             </TooltipContent>
                         </Tooltip>
                     </TooltipProvider>
@@ -115,7 +115,7 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
             {/* Column headers */}
             <div className="px-4 py-1.5 flex items-center justify-between text-[9px] font-bold text-gray-400 uppercase tracking-widest border-b border-gray-100">
                 <span>Domain</span>
-                <span>Avg Position</span>
+                <span>Rank</span>
             </div>
 
             {/* Rankings list */}
@@ -137,7 +137,7 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
                                 <div className="flex items-center gap-2">
                                     <div className="text-right">
                                         <span className={cn("text-xs font-bold", isMainBrand ? "text-gray-900" : "text-gray-700")}>
-                                            {brand.average_position > 0 ? brand.average_position.toFixed(1) : '-'}
+                                            {brand.average_position > 0 ? Math.round(brand.average_position) : '-'}
                                         </span>
                                     </div>
                                     {delta !== null && delta !== 0 && (

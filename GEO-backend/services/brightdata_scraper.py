@@ -75,14 +75,24 @@ def _trigger_scrape(llm_name: str, prompts: List[str], country: str = "in") -> s
     dataset_id = _get_dataset_id(llm_name)
     target_url = _get_target_url(llm_name)
 
-    payload = [
-        {
-            "url": target_url,
-            "prompt": p,
-            "country": country
-        }
-        for p in prompts
-    ]
+    # Gemini's BrightData scraper does not support the 'country' parameter
+    if llm_name == "Gemini":
+        payload = [
+            {
+                "url": target_url,
+                "prompt": p,
+            }
+            for p in prompts
+        ]
+    else:
+        payload = [
+            {
+                "url": target_url,
+                "prompt": p,
+                "country": country
+            }
+            for p in prompts
+        ]
 
     endpoint = f"https://api.brightdata.com/datasets/v3/trigger?dataset_id={dataset_id}&format=json"
 

@@ -16,11 +16,20 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurb
 
 const FRONTEND_PROMPT_LIMITS: Record<string, { max_prompts_per_project: number }> = {
   "free": { max_prompts_per_project: 2 },
-  "lite plan": { max_prompts_per_project: 5 },
-  "growth plan": { max_prompts_per_project: 10 },
-  "custom plan": { max_prompts_per_project: 10 },
-  "pro plan": { max_prompts_per_project: 10 },
+  "lite plan": { max_prompts_per_project: 10 },
+  "growth plan": { max_prompts_per_project: 25 },
+  "custom plan": { max_prompts_per_project: 50 },
+  "pro plan": { max_prompts_per_project: 50 },
 };
+
+const ALL_LLMS = [
+  "Perplexity",
+  "Claude",
+  "Google AI Overview",
+  "ChatGPT",
+  "Gemini",
+  "Mistral"
+];
 
 interface CohortPromptSelectorProps {
   sessionId: string;
@@ -58,8 +67,15 @@ export function CohortPromptSelector({
   const planName = subscription.subscription_plan?.toLowerCase() || "free";
   const limits = FRONTEND_PROMPT_LIMITS[planName] || FRONTEND_PROMPT_LIMITS["free"];
 
-  // Global project-wide limit (e.g., 5 total for Lite Plan)
+  // Global project-wide limit
   const MAX_SELECTION = limits.max_prompts_per_project;
+
+  const getAvailableLLMs = () => {
+    if (planName === "pro plan" || planName === "custom plan") return ALL_LLMS;
+    if (planName === "growth plan") return ALL_LLMS.filter(l => !l.includes("Claude"));
+    return ALL_LLMS.filter(l => !l.includes("ChatGPT") && !l.includes("Claude")); // Lite Plan & free
+  };
+  const availableLLMsList = getAvailableLLMs();
 
   // Existing State
   const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
@@ -636,7 +652,7 @@ export function CohortPromptSelector({
       <div className="border-t pt-8 pb-4">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Platforms to Analyze</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-          {AVAILABLE_LLMS.map((llm) => {
+          {availableLLMsList.map((llm) => {
             const isSelected = selectedLLMs.includes(llm);
             return (
               <div

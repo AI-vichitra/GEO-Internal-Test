@@ -1,12 +1,14 @@
 import os
 import json
 import traceback
+import httpx
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import logging
 from urllib.parse import urlparse
 from collections import Counter
 from supabase import create_client, Client
+from supabase.client import ClientOptions
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,10 +19,18 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
+
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ✅ FIX: Disable HTTP/2 to resolve [WinError 10035] WSAEWOULDBLOCK on Windows + Python 3.14
+# The default Supabase client uses httpx with HTTP/2 which has non-blocking socket issues on Windows.
+_httpx_client = httpx.Client(http2=False, timeout=30.0)
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    options=ClientOptions(httpx_client=_httpx_client)
+)
 
 # --- STATUS MANAGEMENT (The Fix for Global Variable Issue) ---
 
@@ -476,10 +486,17 @@ def get_brand_visibility_history(brand_name: str, user_id: Optional[str] = None)
              
         # Batch fetch scores for all sessions in this history
         scores_response = supabase.table('scoring_results').select(
-            'session_id, brand_mention_score, average_positioning'
+            'session_id, brand_mention_score'
         ).in_('session_id', session_ids).neq('llm_name', 'SUMMARY').execute()
         
         all_scoring_results = scores_response.data or []
+        
+        # Also batch fetch the new "Rank" which is stored in average_positioning in share_of_voice
+        sov_response = supabase.table('share_of_voice').select(
+            'session_id, average_positioning'
+        ).in_('session_id', session_ids).eq('brand_name', brand_name).execute()
+        
+        sov_ranks_by_session = {sov['session_id']: sov.get('average_positioning', 0) for sov in (sov_response.data or [])}
         
         # Group scores by session_id for O(1) access
         scores_by_session = {}
@@ -503,9 +520,8 @@ def get_brand_visibility_history(brand_name: str, user_id: Optional[str] = None)
             
             visibility = (mentions / total_prompts * 100) if total_prompts > 0 else 0
             
-            # Calculate Avg Position (only for prompts where brand was found/ranked)
-            positions = [s.get('average_positioning', 0) for s in scoring_results if s.get('average_positioning', 0) > 0]
-            avg_position = sum(positions) / len(positions) if positions else 0
+            # Get Rank from Share of Voice (calculated per session)
+            avg_position = sov_ranks_by_session.get(session_id, 0)
 
             timestamp = session['timestamp']
             date = timestamp.split('T')[0] if 'T' in timestamp else timestamp.split(' ')[0]

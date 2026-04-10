@@ -27,18 +27,19 @@ import { useAuth } from "@/contexts/AuthContext";
 
 const FRONTEND_PROMPT_LIMITS: Record<string, { max_prompts_per_project: number }> = {
   "free": { max_prompts_per_project: 2 },
-  "lite plan": { max_prompts_per_project: 5 },
-  "growth plan": { max_prompts_per_project: 10 },
-  "custom plan": { max_prompts_per_project: 10 },
-  "pro plan": { max_prompts_per_project: 10 },
+  "lite plan": { max_prompts_per_project: 10 },
+  "growth plan": { max_prompts_per_project: 25 },
+  "custom plan": { max_prompts_per_project: 50 },
+  "pro plan": { max_prompts_per_project: 50 },
 };
 
-const AVAILABLE_LLMS = [
+const ALL_LLMS = [
   { id: "Perplexity", name: "Perplexity" },
   { id: "Claude", name: "Claude 3.5 Sonnet" },
   { id: "Google AI Overview", name: "Google AI Overview" },
   { id: "ChatGPT", name: "ChatGPT-4o" },
-  { id: "Gemini", name: "Gemini Pro" }
+  { id: "Gemini", name: "Gemini Pro" },
+  { id: "Mistral", name: "Mistral" }
 ];
 
 interface DashboardPromptManagerProps {
@@ -62,10 +63,14 @@ export function DashboardPromptManager({
   const planName = subscription.subscription_plan?.toLowerCase() || "free";
   const limits = FRONTEND_PROMPT_LIMITS[planName] || FRONTEND_PROMPT_LIMITS["free"];
 
-  // Per cohort limit
-  const maxPromptsPerCohort = limits.max_prompts_per_project;
-  // Global max across 5 cohorts
-  const MAX_SELECTION = maxPromptsPerCohort * 5;
+  const MAX_SELECTION = limits.max_prompts_per_project;
+
+  const getAvailableLLMs = () => {
+    if (planName === "pro plan" || planName === "custom plan") return ALL_LLMS;
+    if (planName === "growth plan") return ALL_LLMS.filter(l => l.id !== "Claude");
+    return ALL_LLMS.filter(l => l.id !== "ChatGPT" && l.id !== "Claude"); // Lite Plan & free
+  };
+  const AVAILABLE_LLMS = getAvailableLLMs();
 
   // State
   const [selectedPrompts, setSelectedPrompts] = useState<Set<string>>(new Set());
@@ -76,6 +81,38 @@ export function DashboardPromptManager({
   const [cohorts, setCohorts] = useState<any[]>(initialCohorts || []);
   const [loadingCohorts, setLoadingCohorts] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [cooldownTime, setCooldownTime] = useState<number>(0);
+
+  // Initialize cooldown
+  useEffect(() => {
+    const lastRunStr = localStorage.getItem("lastManualAnalysisTime");
+    if (lastRunStr) {
+      const lastRun = parseInt(lastRunStr, 10);
+      const diff = Date.now() - lastRun;
+      const cooldownPeriod = 3 * 60 * 60 * 1000; // 3 hours
+      if (diff < cooldownPeriod) {
+        setCooldownTime(cooldownPeriod - diff);
+      }
+    }
+  }, []);
+
+  // Update cooldown timer every second
+  useEffect(() => {
+    if (cooldownTime > 0) {
+      const interval = setInterval(() => {
+        setCooldownTime(prev => Math.max(0, prev - 1000));
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [cooldownTime]);
+
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+  };
 
   // Fetch cohorts if not provided
   useEffect(() => {
@@ -169,6 +206,15 @@ export function DashboardPromptManager({
   };
 
   const handleRunAnalysis = () => {
+    if (cooldownTime > 0) {
+      toast({
+        id: "cooldown",
+        title: "Please wait",
+        description: `You can re-analyze manually after ${formatTime(cooldownTime)}.`,
+        variant: "destructive"
+      });
+      return;
+    }
     if (selectedPrompts.size === 0) {
       toast({
         id: "no-prompts",
@@ -185,6 +231,7 @@ export function DashboardPromptManager({
       });
       return;
     }
+    localStorage.setItem("lastManualAnalysisTime", Date.now().toString());
     onReanalyze(Array.from(selectedPrompts), selectedLLMs);
   };
 
@@ -473,10 +520,15 @@ export function DashboardPromptManager({
               <Button
                 size="lg"
                 onClick={handleRunAnalysis}
-                disabled={isAnalyzing || selectedPrompts.size === 0 || selectedLLMs.length === 0}
-                className="w-full h-12 text-sm font-bold bg-teal-500 hover:bg-teal-600 shadow-md transition-all rounded-xl group"
+                disabled={isAnalyzing || selectedPrompts.size === 0 || selectedLLMs.length === 0 || cooldownTime > 0}
+                className="w-full h-12 text-sm font-bold bg-teal-500 hover:bg-teal-600 shadow-md transition-all rounded-xl group relative overflow-hidden"
               >
-                {isAnalyzing ? (
+                {cooldownTime > 0 ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2" />
+                    Cooldown: {formatTime(cooldownTime)}
+                  </>
+                ) : isAnalyzing ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                     Analyzing...
@@ -515,7 +567,7 @@ export function DashboardPromptManager({
                 </div>
               )}
 
-              {!isAnalyzing && (
+              {(!isAnalyzing && cooldownTime === 0) && (
                 <p className="text-[10px] text-center text-gray-400 px-2">
                   Analyzes {selectedPrompts.size}/{MAX_SELECTION} prompts across {selectedLLMs.length} platforms
                 </p>

@@ -105,7 +105,7 @@ export function DualVisibilityCharts({ brandName, productName, sessionId }: Dual
                   color: "hsl(222, 47%, 11%)"
                 }}
                 formatter={(value: number) => [
-                  reversed ? `#${value.toFixed(1)}` : `${value.toFixed(1)}%`,
+                  reversed ? `#${Math.round(value)}` : `${value.toFixed(1)}%`,
                   title
                 ]}
               />
@@ -126,8 +126,8 @@ export function DualVisibilityCharts({ brandName, productName, sessionId }: Dual
     <>
       {renderChart(mainHistory, "Overall Brand Trend", "hsl(174, 72%, 46%)", "visGrad",
         "Historical visibility across sessions", "visibility")}
-      {renderChart(mainHistory, "Average Position Trend", "hsl(217, 91%, 60%)", "posGrad",
-        "Historical average position", "average_position", true, [1, 'auto'])}
+      {renderChart(mainHistory, "Overall Rank Trend", "hsl(217, 91%, 60%)", "posGrad",
+        "Historical overall rank", "average_position", true, [1, 'auto'])}
     </>
   );
 }

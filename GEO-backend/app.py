@@ -78,10 +78,10 @@ init_database()
 # Map for subscription_plan -> { limits }
 PLAN_LIMITS = {
     "free": {"max_projects": 1, "max_prompts_per_project": 2}, # Default for unpaid users
-    "lite plan": {"max_projects": 2, "max_prompts_per_project": 5},
-    "growth plan": {"max_projects": 4, "max_prompts_per_project": 10},
-    "custom plan": {"max_projects": 8, "max_prompts_per_project": 10},
-    "pro plan": {"max_projects": 8, "max_prompts_per_project": 10}, # Alias for legacy
+    "lite plan": {"max_projects": 3, "max_prompts_per_project": 10},
+    "growth plan": {"max_projects": 5, "max_prompts_per_project": 25},
+    "pro plan": {"max_projects": 10, "max_prompts_per_project": 50},
+    "custom plan": {"max_projects": 10, "max_prompts_per_project": 50},
     "enterprise": {"max_projects": 100, "max_prompts_per_project": 100}
 }
 
@@ -163,13 +163,10 @@ app = FastAPI(
 )
 # ============= CORS MIDDLEWARE =============
 origins = [ # Your current frontend URL
-    "https://optimiseurbrand.tech",
-    "http://optimiseurbrand.tech",
-    "https://www.optimiseurbrand.tech",
-    "http://www.optimiseurbrand.tech",
-    "localhost:3000",
     "http://localhost:3000",
-    os.environ.get("FRONTEND_URL", "https://optimiseurbrand.tech")
+    "http://34.123.146.6",
+    "http://34.123.146.6:3000",
+    os.environ.get("FRONTEND_URL", "http://localhost:3000")
 ]
 
 app.add_middleware(

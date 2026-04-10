@@ -171,7 +171,7 @@ export function CompetitorManager({ sessionId, currentCompetitors, onUpdate }: C
               {isUpdating ? "Recalculating Metrics..." : "Save & Recalculate"}
             </Button>
             <p className="text-xs text-gray-500 text-center mt-3">
-              Updates Share of Voice and Average Position instantly
+              Updates Share of Voice and Overall Rank instantly
             </p>
           </div>
         </CardContent>

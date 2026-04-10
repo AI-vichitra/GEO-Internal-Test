@@ -38,10 +38,10 @@ interface ProjectsWindowProps {
 
 const FRONTEND_PLAN_LIMITS: Record<string, { max_projects: number }> = {
     "free": { max_projects: 1 },
-    "lite plan": { max_projects: 2 },
-    "growth plan": { max_projects: 4 },
-    "custom plan": { max_projects: 8 },
-    "pro plan": { max_projects: 8 },
+    "lite plan": { max_projects: 3 },
+    "growth plan": { max_projects: 5 },
+    "custom plan": { max_projects: 10 },
+    "pro plan": { max_projects: 10 },
 };
 
 export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWindowProps) {

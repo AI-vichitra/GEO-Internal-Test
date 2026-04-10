@@ -4,14 +4,14 @@ import { cn } from "@/lib/utils";
 interface SummaryMetricsProps {
   totalPrompts: number;
   mentionCount: number;
-  averagePosition: number;
+  averageRank: number;
   visibilityScore: number;
 }
 
 export function SummaryMetrics({
   totalPrompts,
   mentionCount,
-  averagePosition,
+  averageRank,
   visibilityScore,
 }: SummaryMetricsProps) {
 
@@ -31,10 +31,10 @@ export function SummaryMetrics({
       accentClass: "metric-card-emerald",
     },
     {
-      label: "Avg. Position",
-      value: (averagePosition || 0).toFixed(1),
+      label: "Overall Rank",
+      value: averageRank ? `#${averageRank}` : "-",
       icon: TrendingUp,
-      description: "Rank in responses",
+      description: "Competitive rank",
       accentClass: "metric-card-amber",
     },
     {

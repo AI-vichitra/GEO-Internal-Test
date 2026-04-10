@@ -31,21 +31,15 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
     {
       name: "Lite Plan",
       description: "Perfect for Individuals",
-      monthlyPrice: 29,
-      yearlyPrice: 290,
+      monthlyPrice: 39,
+      yearlyPrice: 390,
       badge: "Most Affordable",
       features: [
-        { text: "2 Projects", included: true },
-        { text: "5 Prompts Per Project", included: true },
-        { text: "5 Content Generation", included: true },
-        { text: "72-Hour Refresh", included: true },
+        { text: "3 Projects", included: true },
+        { text: "10 Prompts Tracked (UI BASED)", included: true },
+        { text: "48 Hour Refresh", included: true },
         { text: "Detailed Citation Data", included: true },
-        { text: "2 Locations", included: true },
-        { text: "Competitor Monitoring", included: true },
-        { text: "Actionable AI Insights", included: true },
-        { text: "AI Traffic Analytics", included: true },
-        { text: "Human Support", included: true },
-        { text: "No Extra Seats", included: false }
+        { text: "Competitor Monitoring Included", included: true }
       ],
       cta: "Start 7-day trial",
       popular: false
@@ -53,43 +47,31 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
     {
       name: "Growth Plan",
       description: "Ideal for Advanced Users",
-      monthlyPrice: 79,
-      yearlyPrice: 790,
+      monthlyPrice: 89,
+      yearlyPrice: 890,
       badge: "Most Popular",
       features: [
-        { text: "4 Projects", included: true },
-        { text: "10 Prompts Per Project", included: true },
-        { text: "15 Content Generation", included: true },
+        { text: "5 Projects", included: true },
+        { text: "25 Prompts Tracked (UI BASED)", included: true },
         { text: "Daily Refresh", included: true },
         { text: "Detailed Citation Data", included: true },
-        { text: "5 Locations", included: true },
-        { text: "Competitor Monitoring", included: true },
-        { text: "Actionable AI Insights", included: true },
-        { text: "AI Traffic Analytics", included: true },
-        { text: "Human Support", included: true },
-        { text: "2 Extra Seats", included: true }
+        { text: "Competitor Monitoring Included", included: true }
       ],
       cta: "Start 7-day trial",
       popular: true
     },
     {
-      name: "Custom Plan",
+      name: "Pro Plan",
       description: "Built for Small Teams",
-      monthlyPrice: 139,
-      yearlyPrice: 1390,
+      monthlyPrice: 149,
+      yearlyPrice: 1490,
       badge: "Best Value",
       features: [
-        { text: "8 Projects", included: true },
-        { text: "10 Prompts Per Project", included: true },
-        { text: "32 Content Generation", included: true },
+        { text: "10 Projects", included: true },
+        { text: "50 Prompts Tracked (UI BASED)", included: true },
         { text: "Daily Refresh", included: true },
         { text: "Detailed Citation Data", included: true },
-        { text: "10 Locations", included: true },
-        { text: "Competitor Monitoring", included: true },
-        { text: "Actionable AI Insights", included: true },
-        { text: "AI Traffic Analytics", included: true },
-        { text: "Priority Human Support", included: true },
-        { text: "5 Extra Seats", included: true }
+        { text: "Competitor Monitoring Included", included: true }
       ],
       cta: "Start 7-day trial",
       popular: false

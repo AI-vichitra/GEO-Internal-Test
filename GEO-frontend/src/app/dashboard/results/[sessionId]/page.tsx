@@ -17,7 +17,25 @@ export default function ResultsPage() {
 
     const [showPromptSelection, setShowPromptSelection] = useState(false);
 
-    const handleResultsReady = (sessionId: string) => {
+    const handleResultsReady = async (completedSessionId: string) => {
+        try {
+            const token = localStorage.getItem("token");
+            const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
+            const res = await fetch(`${API_BASE_URL}/api/results/${completedSessionId}`, {
+                headers: { "Authorization": `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                const brandName = data.brand_name;
+                if (brandName) {
+                    router.push(`/dashboard/${encodeURIComponent(brandName)}?tab=overview`);
+                    return;
+                }
+            }
+        } catch (err) {
+            console.error("Could not resolve brand name after re-analysis:", err);
+        }
+        // Fallback: go to projects list
         router.push("/dashboard");
     };
 

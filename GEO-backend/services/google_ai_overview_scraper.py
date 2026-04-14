@@ -70,7 +70,7 @@ def setup_driver():
     
     return driver
 
-def wait_for_ai_overview(driver, timeout=10):
+def wait_for_ai_overview(driver, timeout=100):
     """Wait for AI Overview section to appear and load"""
     try:
         # Wait for potential AI Overview indicators
@@ -84,15 +84,15 @@ def wait_for_ai_overview(driver, timeout=10):
         ]
         
         # Wait a bit for dynamic content to load
-        time.sleep(3)
+        time.sleep(10)
         
         # Scroll to trigger lazy loading
         driver.execute_script("window.scrollTo(0, 500);")
-        time.sleep(2)
+        time.sleep(10)
         
         # Scroll more to ensure full content loads
         driver.execute_script("window.scrollTo(0, 800);")
-        time.sleep(2)
+        time.sleep(10)
         
         return True
         
@@ -224,7 +224,7 @@ def extract_ai_overview_links(driver, query: str, max_links: int = 10) -> Dict[s
         print(f"Searching: {query[:60]}...")
         
         driver.get("https://www.google.com")
-        time.sleep(random.uniform(2, 3))
+        time.sleep(random.uniform(10, 20))
         
         # Handle cookie consent
         try:
@@ -241,7 +241,7 @@ def extract_ai_overview_links(driver, query: str, max_links: int = 10) -> Dict[s
         
         # Search
         try:
-            search_box = WebDriverWait(driver, 10).until(
+            search_box = WebDriverWait(driver, 100).until(
                 EC.presence_of_element_located((By.NAME, "q"))
             )
             search_box.clear()
@@ -253,7 +253,7 @@ def extract_ai_overview_links(driver, query: str, max_links: int = 10) -> Dict[s
             return result
         
         print("Waiting for AI Overview to load...")
-        wait_for_ai_overview(driver, timeout=10)
+        wait_for_ai_overview(driver, timeout=100)
         
         click_show_more_button(driver)
         

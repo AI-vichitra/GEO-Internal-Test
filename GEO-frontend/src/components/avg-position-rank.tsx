@@ -1,9 +1,6 @@
 "use client";
 
 import {
-    TrendingUp,
-    TrendingDown,
-    Minus,
     HelpCircle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -77,13 +74,8 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
     });
 
     const mainBrandData = cappedScores.find(b => b.brand.toLowerCase() === brandName.toLowerCase());
-    const mainBrandRank = mainBrandData ? (sortedScores.findIndex(s => s.brand.toLowerCase() === brandName.toLowerCase()) + 1) : 0;
+    const mainBrandRank = (mainBrandData && mainBrandData.visibility_score > 0) ? (sortedScores.findIndex(s => s.brand.toLowerCase() === brandName.toLowerCase()) + 1) : 0;
 
-
-    const calculateDelta = (current: number, previous: number | undefined) => {
-        if (!previous || previous === 0 || current === 0) return null;
-        return previous - current;
-    };
 
     return (
         <div className="dashboard-card flex flex-col h-full">
@@ -106,7 +98,7 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
                 </div>
                 <div className="flex items-baseline gap-2 mt-1">
                     <span className="text-3xl font-black text-gray-900 leading-none">
-                        #{mainBrandRank || '-'}
+                        {mainBrandRank ? `#${mainBrandRank}` : '-'}
                     </span>
                     <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Overall rank</span>
                 </div>
@@ -123,7 +115,6 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
                 <div className="divide-y divide-gray-50">
                     {sortedScores.slice(0, 10).map((brand, idx) => {
                         const isMainBrand = brand.brand === brandName;
-                        const delta = calculateDelta(brand.average_position, brand.prev_average_position);
 
                         return (
                             <div key={idx} className="py-2 flex items-center justify-between">
@@ -137,15 +128,9 @@ export function AvgPositionRank({ brandName, brandScores }: AvgPositionRankProps
                                 <div className="flex items-center gap-2">
                                     <div className="text-right">
                                         <span className={cn("text-xs font-bold", isMainBrand ? "text-gray-900" : "text-gray-700")}>
-                                            {brand.average_position > 0 ? Math.round(brand.average_position) : '-'}
+                                            {(brand.average_position > 0 && brand.visibility_score > 0) ? Math.round(brand.average_position) : '-'}
                                         </span>
                                     </div>
-                                    {delta !== null && delta !== 0 && (
-                                        <div className={cn("text-[9px] font-bold flex items-center", delta > 0 ? "text-emerald-600" : "text-rose-500")}>
-                                            {delta > 0 ? <TrendingUp className="h-2 w-2 mr-0.5" /> : <TrendingDown className="h-2 w-2 mr-0.5" />}
-                                            {Math.abs(delta).toFixed(1)}
-                                        </div>
-                                    )}
                                 </div>
                             </div>
                         );

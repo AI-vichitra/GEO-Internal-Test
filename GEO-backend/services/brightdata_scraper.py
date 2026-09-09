@@ -64,7 +64,7 @@ def _get_target_url(llm_name: str) -> str:
         raise ValueError(f"No BrightData scraper config found for LLM: {llm_name}")
     return config["url"]
 
-def _trigger_scrape(llm_name: str, prompts: List[str], country: str = "in") -> str:
+def _trigger_scrape(llm_name: str, prompts: List[str], country: str = "") -> str:
     """
     Trigger a BrightData scraping job for the given LLM and prompts.
     Returns the snapshot_id for polling.
@@ -81,6 +81,7 @@ def _trigger_scrape(llm_name: str, prompts: List[str], country: str = "in") -> s
             {
                 "url": target_url,
                 "prompt": p,
+                "country": "",
             }
             for p in prompts
         ]
@@ -89,7 +90,7 @@ def _trigger_scrape(llm_name: str, prompts: List[str], country: str = "in") -> s
             {
                 "url": target_url,
                 "prompt": p,
-                "country": country
+                "country": "",
             }
             for p in prompts
         ]
@@ -169,7 +170,7 @@ def _extract_citations_from_record(record: Dict, llm_name: str) -> List[str]:
 def scrape_llm_responses(
     llm_name: str,
     prompts: List[str],
-    country: str = "in"
+    country: str = ""
 ) -> List[Dict[str, Any]]:
     """
     Main entry point: Scrape responses from an LLM via BrightData.

@@ -17,21 +17,39 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def setup_driver():
-    """Setup Chrome driver with stealth settings"""
+    """Setup Chrome driver with stealth settings (works on Linux/GCP headless servers)"""
+    import platform
+    
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     ]
     
+    is_linux = platform.system() == "Linux"
+    
     opts = webdriver.ChromeOptions()
     opts.add_argument(f'--user-agent={random.choice(user_agents)}')
     opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--start-maximized")
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-popup-blocking")
-    # Add headless mode if you want it to run in background
-    # opts.add_argument("--headless=new")
+    
+    # Headless + sandbox flags required for Linux servers (GCP, etc.)
+    if is_linux:
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-extensions")
+        opts.add_argument("--disable-setuid-sandbox")
+        opts.add_argument("--window-size=1920,1080")
+        opts.binary_location = "/usr/bin/google-chrome"
+        print("🕵️ Headless mode FORCED (Linux/GCP detection)")
+    else:
+        opts.add_argument("--start-maximized")
+
+
+    
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option('useAutomationExtension', False)
     
@@ -41,11 +59,6 @@ def setup_driver():
     if selenium_url:
         try:
             print(f"🌐 Connecting to Remote Selenium at: {selenium_url}")
-            # Ensure these options are set for Docker environment
-            opts.add_argument("--no-sandbox")
-            opts.add_argument("--disable-dev-shm-usage")
-            opts.add_argument("--headless=new") # Generally good for containerized runs
-            
             driver = webdriver.Remote(
                 command_executor=selenium_url,
                 options=opts
@@ -55,22 +68,52 @@ def setup_driver():
             print(f"❌ Failed to connect to Remote Selenium: {e}")
             print("Falling back to local driver...")
 
+    # Local driver - try system-installed first, then common paths
     try:
         driver = webdriver.Chrome(options=opts)
-    except:
-        # If system chromedriver not found, try common paths
-        try:
-            service = Service(executable_path="chromedriver.exe")
-            driver = webdriver.Chrome(service=service, options=opts)
-        except:
-            service = Service(executable_path="drivers/chromedriver.exe")
-            driver = webdriver.Chrome(service=service, options=opts)
+    except Exception:
+        if is_linux:
+            # Linux paths
+            linux_paths = ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver"]
+            driver = None
+            for path in linux_paths:
+                try:
+                    service = Service(executable_path=path)
+                    driver = webdriver.Chrome(service=service, options=opts)
+                    print(f"  ✅ Using chromedriver at: {path}")
+                    break
+                except Exception:
+                    continue
+            if not driver:
+                raise RuntimeError(
+                    "Chrome/ChromeDriver not found on this Linux server. "
+                    "Install with: sudo apt install -y google-chrome-stable chromium-chromedriver"
+                )
+        else:
+            # Windows paths
+            try:
+                service = Service(executable_path="chromedriver.exe")
+                driver = webdriver.Chrome(service=service, options=opts)
+            except Exception:
+                service = Service(executable_path="drivers/chromedriver.exe")
+                driver = webdriver.Chrome(service=service, options=opts)
     
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    # Enhanced stealth JS overrides via CDP
+    try:
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': '''
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            '''
+        })
+    except Exception as e:
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     return driver
 
-def wait_for_ai_overview(driver, timeout=100):
+def wait_for_ai_overview(driver, timeout=10):
     """Wait for AI Overview section to appear and load"""
     try:
         # Wait for potential AI Overview indicators
@@ -84,15 +127,15 @@ def wait_for_ai_overview(driver, timeout=100):
         ]
         
         # Wait a bit for dynamic content to load
-        time.sleep(10)
+        time.sleep(3)
         
         # Scroll to trigger lazy loading
         driver.execute_script("window.scrollTo(0, 500);")
-        time.sleep(10)
+        time.sleep(2)
         
         # Scroll more to ensure full content loads
         driver.execute_script("window.scrollTo(0, 800);")
-        time.sleep(10)
+        time.sleep(2)
         
         return True
         
@@ -149,18 +192,25 @@ def extract_ai_overview_text(ai_section) -> str:
         # "Can't generate an AI overview right now. Try again later." as well
         # as UI elements like "AI Overview", "Listen Pause", multilingual
         # variants and translation errors.
+        # Initial strip to help anchors like '^' match correctly
+        text_content = text_content.strip()
+
         noise_patterns = [
             r"An AI Overview is not available for this search",
             r"Can(?:'t| not) generate an AI overview right now(?:\.|)\s*Try again later(?:\.|)",
-            r"AI Overview",        # heading / UI label
-            r"Listen\s*Pause",
-            r"सुनें\s*रोकें",
+            r"^\s*AI Overview",        # heading / UI label
+            r"^\s*Listen\s*Pause",
+            r"^\s*सुनें\s*रोकें",
+            r"^\s*English\b\s*",      # language toggle/label noise at start
+            r"^\s*English\s+Hindi",    # multi-language toggle noise
+            r"^\s*Hindi\b\s*",        # alternative language toggle
             r"Error translating content(?:\.|).*?Please try again later(?:\.|)",
             r"Can't generate an right now", # defensive/typo variants
         ]
 
         for pattern in noise_patterns:
             text_content = re.sub(pattern, '', text_content, flags=re.IGNORECASE | re.DOTALL)
+            text_content = text_content.strip()
         
         # Find where sources section starts
         sources_pattern = r'(?:Sources|Citations|References)\s*:'
@@ -196,7 +246,7 @@ def extract_ai_overview_text(ai_section) -> str:
         
         # Limit to 4500 characters, cut at last sentence
         if len(answer_part) > 4500:
-            truncated = answer_part[:3000]
+            truncated = answer_part[:4500]
             last_period = truncated.rfind('.')
             if last_period > 500:
                 answer_part = truncated[:last_period + 1]
@@ -221,39 +271,25 @@ def extract_ai_overview_links(driver, query: str, max_links: int = 10) -> Dict[s
     }
     
     try:
-        print(f"Searching: {query[:60]}...")
+        from urllib.parse import quote_plus
+        encoded_query = quote_plus(query)
+        search_url = f"https://www.google.com/search?q={encoded_query}&hl=en&gl=us"
+        print(f"Searching via direct SERP URL: {search_url}")
         
-        driver.get("https://www.google.com")
-        time.sleep(random.uniform(10, 20))
+        driver.get(search_url)
+        time.sleep(random.uniform(4, 6))
         
-        # Handle cookie consent
-        try:
-            reject_button = driver.find_element(By.XPATH, "//*[contains(text(), 'Reject all')]")
-            reject_button.click()
-            time.sleep(1)
-        except:
+        # If redirected to consent page or search failed, try typing manually
+        if "consent.google.com" in driver.current_url:
             try:
-                accept_button = driver.find_element(By.XPATH, "//*[contains(text(), 'Accept all')]")
-                accept_button.click()
-                time.sleep(1)
+                reject_btn = driver.find_element(By.XPATH, "//*[contains(text(), 'Reject all')]")
+                reject_btn.click()
+                time.sleep(2)
             except:
                 pass
         
-        # Search
-        try:
-            search_box = WebDriverWait(driver, 100).until(
-                EC.presence_of_element_located((By.NAME, "q"))
-            )
-            search_box.clear()
-            search_box.send_keys(query)
-            search_box.send_keys(Keys.RETURN)
-            time.sleep(random.uniform(4, 6))
-        except Exception as e:
-            print(f"Error entering query: {str(e)}")
-            return result
-        
         print("Waiting for AI Overview to load...")
-        wait_for_ai_overview(driver, timeout=100)
+        wait_for_ai_overview(driver, timeout=10)
         
         click_show_more_button(driver)
         
@@ -261,49 +297,72 @@ def extract_ai_overview_links(driver, query: str, max_links: int = 10) -> Dict[s
         time.sleep(2)
         
         soup = BeautifulSoup(driver.page_source, 'html.parser')
+        page_size = len(driver.page_source)
+        if page_size < 12000:
+            print(f"  ⚠️ Degraded page detected ({page_size:,} bytes) — Google may have served a stripped response for this UA")
         
         ai_section = None
         
-        # Strategy 1: Find by "AI Overview" text
-        ai_heading = soup.find(string=lambda text: text and 'AI Overview' in text if text else False)
+        # Strategy 1: Find by "AI Overview" or "AI overview" heading
+        ai_heading = soup.find(string=lambda text: text and ('AI Overview' in text or 'AI overview' in text) if text else False)
         if ai_heading:
             parent = ai_heading.find_parent('div', {'data-hveid': True})
             if not parent:
                 parent = ai_heading.find_parent('div', {'data-attrid': True})
             if not parent:
                 parent = ai_heading.find_parent('div')
-                for _ in range(5):
-                    if parent and len(parent.get_text(strip=True)) > 200:
+                for _ in range(7):
+                    if parent and len(parent.get_text(strip=True)) > 150:
                         break
                     parent = parent.find_parent('div') if parent else None
             
             ai_section = parent
             if ai_section:
-                print("Found AI Overview (by heading)")
+                print("  ✅ Found AI Overview (by heading)")
         
-        # Strategy 2: Find by content
+        # Strategy 2: Find by modern Google Generative/Overview DOM classes & attributes
+        if not ai_section:
+            generative_divs = soup.find_all('div', attrs={
+                'data-attrid': lambda x: x and ('Generative' in str(x) or 'ai_overview' in str(x).lower()) if x else False
+            })
+            if not generative_divs:
+                # Common Google AI Overview container classes: MNNufe, K3n31, etc.
+                generative_divs = soup.find_all('div', class_=lambda c: c and ('MNNufe' in str(c) or 'K3n31' in str(c)) if c else False)
+                
+            if generative_divs:
+                ai_section = generative_divs[0]
+                print("  ✅ Found AI Overview (by Generative attribute/class)")
+        
+        # Strategy 3: Find by jscontroller/data-initq containers with substantial text
+        if not ai_section:
+            candidate_divs = soup.find_all('div', attrs={'data-hveid': True})
+            for div in candidate_divs:
+                text_content = div.get_text(strip=True)
+                links_in_div = div.find_all('a', href=True)
+                if len(text_content) > 200 and len(links_in_div) >= 1:
+                    if 'Generative' in str(div) or 'Overview' in text_content or 'AI' in text_content or 'Listen' in text_content:
+                        ai_section = div
+                        print("  ✅ Found AI Overview (by candidate container)")
+                        break
+        
+        # Strategy 4: Fallback - grab top SERP block with multiple references
         if not ai_section:
             hveid_divs = soup.find_all('div', {'data-hveid': True})
             for div in hveid_divs:
                 text_content = div.get_text(strip=True)
-                links_in_div = div.find_all('a', {'target': '_blank', 'rel': 'noopener'})
-                
-                if len(text_content) > 200 and len(links_in_div) >= 2:
+                links_in_div = div.find_all('a', href=True)
+                if len(text_content) > 300 and len(links_in_div) >= 2:
                     ai_section = div
-                    print("Found AI Overview (by content)")
+                    print("  ✅ Found AI Overview (by fallback content)")
                     break
         
-        # Strategy 3: Find by attribute
         if not ai_section:
-            ai_section = soup.find('div', {'data-attrid': lambda x: x and 'GenerativeAnswer' in x if x else False})
-            if ai_section:
-                print("Found AI Overview (by attribute)")
-        
-        if not ai_section:
-            print("AI Overview not found on page")
+            print("  ℹ️ AI Overview not found on page")
             return result
         
         result['has_ai_overview'] = True
+
+
         
         # Extract clean answer text
         answer_text = extract_ai_overview_text(ai_section)

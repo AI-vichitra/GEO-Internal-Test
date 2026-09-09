@@ -18,7 +18,7 @@ anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 mistral_client = Mistral(api_key=MISTRAL_API_KEY) if MISTRAL_API_KEY else None
 
-DEFAULT_MODEL_STR = "claude-sonnet-4-20250514"
+DEFAULT_MODEL_STR = "claude-sonnet-4-6"
 logger = logging.getLogger(__name__)
 
 def generate_prompts(brand_name, num_prompts=5, research_context=None, keywords=None, industry=None):

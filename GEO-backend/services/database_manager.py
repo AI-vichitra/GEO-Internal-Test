@@ -233,10 +233,12 @@ def init_database():
     return True
 
 def create_session_id(brand_name: str, product_name: Optional[str] = None) -> str:
+    import secrets
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_suffix = secrets.token_hex(2)  # 4-char hex, e.g. "a3f1" — ensures uniqueness even on same-second creation
     if product_name:
-        return f"{brand_name.replace(' ', '_')}_{product_name.replace(' ', '_')}_{timestamp}"
-    return f"{brand_name.replace(' ', '_')}_{timestamp}"
+        return f"{brand_name.replace(' ', '_')}_{product_name.replace(' ', '_')}_{timestamp}_{unique_suffix}"
+    return f"{brand_name.replace(' ', '_')}_{timestamp}_{unique_suffix}"
 
 def create_prompt_id(session_id: str, prompt_index: int) -> str:
     return f"{session_id}_prompt_{prompt_index}"
@@ -486,17 +488,10 @@ def get_brand_visibility_history(brand_name: str, user_id: Optional[str] = None)
              
         # Batch fetch scores for all sessions in this history
         scores_response = supabase.table('scoring_results').select(
-            'session_id, brand_mention_score'
+            'session_id, brand_mention_score, average_positioning'
         ).in_('session_id', session_ids).neq('llm_name', 'SUMMARY').execute()
         
         all_scoring_results = scores_response.data or []
-        
-        # Also batch fetch the new "Rank" which is stored in average_positioning in share_of_voice
-        sov_response = supabase.table('share_of_voice').select(
-            'session_id, average_positioning'
-        ).in_('session_id', session_ids).eq('brand_name', brand_name).execute()
-        
-        sov_ranks_by_session = {sov['session_id']: sov.get('average_positioning', 0) for sov in (sov_response.data or [])}
         
         # Group scores by session_id for O(1) access
         scores_by_session = {}
@@ -505,6 +500,11 @@ def get_brand_visibility_history(brand_name: str, user_id: Optional[str] = None)
             if sid not in scores_by_session:
                 scores_by_session[sid] = []
             scores_by_session[sid].append(score)
+        rank_response = supabase.table('share_of_voice').select(
+            'session_id, rank'
+        ).in_('session_id', session_ids).eq('brand_name', brand_name).execute()
+        
+        ranks_by_session = {r['session_id']: r['rank'] for r in (rank_response.data or [])}
         
         result = []
         
@@ -520,8 +520,8 @@ def get_brand_visibility_history(brand_name: str, user_id: Optional[str] = None)
             
             visibility = (mentions / total_prompts * 100) if total_prompts > 0 else 0
             
-            # Get Rank from Share of Voice (calculated per session)
-            avg_position = sov_ranks_by_session.get(session_id, 0)
+            # Use actual rank stored in share_of_voice
+            avg_position = ranks_by_session.get(session_id, 0)
 
             timestamp = session['timestamp']
             date = timestamp.split('T')[0] if 'T' in timestamp else timestamp.split(' ')[0]
@@ -563,7 +563,11 @@ def get_llm_aggregate_scores(session_id: str, llm_name: str) -> Dict[str, float]
         avg_visibility = sum(r['normalized_visibility'] for r in results) / total_prompts
         
         positioning_scores = [r['average_positioning'] for r in results if r['average_positioning'] > 0]
-        avg_positioning = sum(positioning_scores) / len(positioning_scores) if positioning_scores else 0
+        if positioning_scores:
+            total_points = sum(max(0, 7 - pos) for pos in positioning_scores)
+            avg_positioning = total_points * len(positioning_scores)
+        else:
+            avg_positioning = 0
         
         avg_weighted = sum(r['weighted_score'] for r in results) / total_prompts
         
@@ -704,7 +708,11 @@ def get_session_results_aggregated(session_id: str):
         total_mentions = sum(1 for s in non_summary_scores if s.get('brand_mention_score', 0) > 0)
         
         positioned_scores = [s for s in non_summary_scores if s.get('average_positioning', 0) > 0]
-        avg_position = sum(s['average_positioning'] for s in positioned_scores) / len(positioned_scores) if positioned_scores else 0
+        if positioned_scores:
+            total_points = sum(max(0, 7 - s.get('average_positioning', 0)) for s in positioned_scores)
+            avg_position = total_points * total_mentions
+        else:
+            avg_position = 0
         
         mention_based_visibility = (total_mentions / total_prompts_analyzed * 100) if total_prompts_analyzed > 0 else 0
         

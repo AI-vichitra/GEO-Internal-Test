@@ -12,11 +12,11 @@ TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 
-tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+# tavily_client = TavilyClient(api_key=TAVILY_API_KEY)  # Moved to lazy-init
 anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
 mistral_client = Mistral(api_key=MISTRAL_API_KEY) if MISTRAL_API_KEY else None
 
-def conduct_deep_research(brand_name: str, product_name: Optional[str] = None, 
+def conduct_deep_research(brand_name: str,
                          website_url: Optional[str] = None, 
                          industry: Optional[str] = None,
                          custom_competitors: Optional[List[str]] = None) -> Dict[str, Any]:  # ✅ ADDED
@@ -50,14 +50,21 @@ def conduct_deep_research(brand_name: str, product_name: Optional[str] = None,
     else:
         skip_competitor_research = False
     
-    # Research query 1: Brand overview and category
-    query_1 = f" What is {brand_name} ?"
-    if product_name:
-        query_1 += f" {product_name}"
+    # Lazy-init Tavily client
+    if not TAVILY_API_KEY:
+        print("❌ Error: TAVILY_API_KEY is missing")
+        research_results['error'] = "Tavily API key not configured"
+        return research_results
+        
+    tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+
+    # Research query 1: Brand overview and category - Primed for industry detection
+    query_1 = f"What is {brand_name} India?"
+
     if industry:
-        query_1 += f" {industry}"
+        query_1 += f" Context: {industry}."
     if website_url:
-        query_1 += f" {website_url}"
+        query_1 += f" Website: {website_url}."
     
     try:
         response_1 = tavily_client.search(
@@ -173,7 +180,7 @@ etc."""
     try:
         try:
             response = anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=500,
                 temperature=0.3,
                 messages=[
@@ -357,7 +364,7 @@ Do not write "The industry is...". Just the name."""
              return response.choices[0].message.content.strip()
         else:
              response = client.messages.create(
-                model="claude-sonnet-4-20250514", # Using available model string
+                model="claude-sonnet-4-6", # Using available model string
                 max_tokens=20,
                 temperature=0.1,
                 messages=[{"role": "user", "content": prompt}]

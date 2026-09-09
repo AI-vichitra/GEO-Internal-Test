@@ -61,7 +61,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 # Log presence (not value) to help debug invalid tokens in different environments
 logger.info(f"JWT secret present: {bool(JWT_SECRET)}; length={len(JWT_SECRET) if JWT_SECRET else 0}")
-
+ 
 # Initialize Supabase client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -77,13 +77,19 @@ init_database()
 # Enforces project and prompt limits based on the user's current subscription.
 # Map for subscription_plan -> { limits }
 PLAN_LIMITS = {
-    "free": {"max_projects": 1, "max_prompts_per_project": 2}, # Default for unpaid users
-    "lite plan": {"max_projects": 3, "max_prompts_per_project": 10},
-    "growth plan": {"max_projects": 5, "max_prompts_per_project": 25},
-    "pro plan": {"max_projects": 10, "max_prompts_per_project": 50},
-    "custom plan": {"max_projects": 10, "max_prompts_per_project": 50},
-    "enterprise": {"max_projects": 100, "max_prompts_per_project": 100}
+    "free": {"max_projects": 1, "max_prompts_per_project": 5, "max_competitors": 10},
+    "lite plan": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10},
+    "growth plan": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10},
+    "custom plan": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10},
+    "pro plan": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10},
+    "enterprise": {"max_projects": 100, "max_prompts_per_project": 100, "max_competitors": 10},
+    "lite": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10},
+    "growth": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10},
+    "custom": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10},
+    "pro": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10}
 }
+
+
 
 # ============= PAID.AI & OPENTELEMETRY =============
 PAID_API_KEY = os.environ.get("PAID_API_KEY")
@@ -162,16 +168,28 @@ app = FastAPI(
     version="1.0.0"
 )
 # ============= CORS MIDDLEWARE =============
-origins = [ # Your current frontend URL
+origins = [
+    "http://geocc.duckdns.org",
+    "https://geocc.duckdns.org",
+    "http://geocc.duckdns.org:3000",
+    "http://geocc.duckdns.org:8000",
+    "https://optimiseurbrand.tech",
+    "http://optimiseurbrand.tech",
+    "https://www.optimiseurbrand.tech",
+    "http://www.optimiseurbrand.tech",
+    "localhost:3000",
     "http://localhost:3000",
-    "http://34.123.146.6",
-    "http://34.123.146.6:3000",
-    os.environ.get("FRONTEND_URL", "http://localhost:3000")
+    "http://34.42.234.69",
+    "http://34.42.234.69:3000",
+    "http://34.42.234.69:5173",
+    "http://34.42.234.69:8000",
+    "http://34.42.234.69:80",
+    os.environ.get("FRONTEND_URL", "http://geocc.duckdns.org")
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, 
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -224,6 +242,8 @@ class AnalysisRequest(BaseModel):
 class ResearchRequest(BaseModel):
     brand_name: str
     website_url: Optional[str] = None
+    industry: Optional[str] = None
+    custom_competitors: Optional[List[str]] = None
 
 class ProjectCreateRequest(BaseModel):
     name: str
@@ -692,7 +712,9 @@ async def conduct_research_endpoint(request: ResearchRequest, user_id: str = Dep
         # Run deep research (synchronously for now as per user request flow)
         results = conduct_deep_research(
             brand_name=request.brand_name,
-            website_url=request.website_url
+            website_url=request.website_url,
+            industry=request.industry,
+            custom_competitors=request.custom_competitors
         )
         
         return {
@@ -875,12 +897,11 @@ async def run_analysis(request: AnalysisRequest, background_tasks: BackgroundTas
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ✅ NEW ENDPOINT: This solves the metric mix-up issue
 @app.post("/api/analysis/fork-session")
 async def fork_session(
     request: CustomExecutionRequest, 
-    parent_session_id: str = Query(..., description="The ID of the session to copy context from"),
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks,
+    parent_session_id: Optional[str] = Query(None, description="The ID of the session to copy context from"),
     user_id: str = Depends(get_current_user)
 ):
     """
@@ -888,6 +909,9 @@ async def fork_session(
     This ensures metrics are calculated ONLY for these prompts.
     """
     try:
+        if not parent_session_id:
+            raise HTTPException(status_code=400, detail="parent_session_id is required")
+            
         # 1. Get Parent Session Metadata
         parent_metadata = get_session_metadata(parent_session_id)
         if not parent_metadata:
@@ -909,7 +933,8 @@ async def fork_session(
             parent_metadata.get('research_data'),
             parent_metadata.get('keywords'),
             parent_metadata.get('industry'),
-            parent_metadata.get('project_id')
+            parent_metadata.get('project_id'),
+            parent_metadata.get('brand_aliases')
         )
 
         # 4. Initialize Status
@@ -1152,6 +1177,15 @@ async def create_new_project(request: ProjectCreateRequest, user_id: str = Depen
                 status_code=403,
                 detail=f"Prompt limit per project exceeded. Your plan allows {limits['max_prompts_per_project']} prompts per project."
             )
+            
+        # Check initial competitors count
+        comps_to_add = request.initial_competitors or []
+        if len(comps_to_add) > limits.get("max_competitors", 10):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Competitor limit exceeded. System limits tracking to {limits.get('max_competitors', 10)} competitors maximum."
+            )
+
 
         # ─── 2. Creation ───────────────────────────────────────────────────
         # 1. Create the project
@@ -1368,18 +1402,20 @@ async def generate_custom_cohort_prompts(
 @app.post("/api/analysis/execute-selected-prompts/{session_id}")
 async def execute_selected_prompts(
     session_id: str,
-    background_tasks: BackgroundTasks,
-    request: dict
+    request: dict,
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
     Execute analysis with user-selected/custom cohorts and prompts
     """
     try:
+        logger.info(f"📥 Received execute-selected-prompts request for {session_id}: {json.dumps(request)}")
         # Check if session exists in database
         from services.database_manager import get_session_results
         session_data = get_session_results(session_id)
         
         if not session_data:
+            logger.warning(f"❌ Session not found: {session_id}")
             raise HTTPException(status_code=404, detail="Session not found")
         
         # ── 1. Plan-Based Limit Enforcement ────────────────────────────────
@@ -1399,9 +1435,11 @@ async def execute_selected_prompts(
         total_cohorts = len(selected_cohorts_data) + len(custom_cohorts_data)
         
         if total_cohorts == 0:
+            logger.warning(f"❌ 400 Validation Error: total_cohorts is 0")
             raise HTTPException(status_code=400, detail="No cohorts selected")
         
         if total_cohorts > 5:
+            logger.warning(f"❌ 400 Validation Error: total_cohorts {total_cohorts} > 5")
             raise HTTPException(
                 status_code=400,
                 detail=f"Maximum 5 cohorts allowed. You selected {total_cohorts}."
@@ -1417,12 +1455,14 @@ async def execute_selected_prompts(
             total_selected_prompts += len(cc.get("prompts", []))
             
         if total_selected_prompts > max_prompts:
+             logger.warning(f"❌ 400 Validation Error: total_selected_prompts ({total_selected_prompts}) > max_prompts ({max_prompts}) for plan {plan_name}")
              raise HTTPException(
                 status_code=400,
                 detail=f"Prompt limit reached. Your {plan_name.capitalize()} allows total {max_prompts} prompts per project. You selected {total_selected_prompts}."
             )
 
         if not selected_llms:
+            logger.warning(f"❌ 400 Validation Error: selected_llms is empty")
             raise HTTPException(status_code=400, detail="No LLMs selected")
         
         logger.info(f" Processing {total_cohorts} cohorts ({len(selected_cohorts_data)} selected, {len(custom_cohorts_data)} custom)")
@@ -1667,7 +1707,6 @@ async def execute_analysis_workflow(
         
         research_data = conduct_deep_research(
             brand_name, 
-            product_name, 
             website_url, 
             industry,
             custom_competitors=custom_competitors
@@ -1887,47 +1926,8 @@ async def execute_prompts_workflow(
         update_progress(session_id, 85, " Calculating visibility scores...")
         logger.info("Step 7: Scoring")
         
-        scored_results = calculate_scores(llm_responses, brand_name, keywords, competitors=competitors_list)
+        scored_results = calculate_scores(llm_responses, brand_name, keywords, competitors=competitors_list, brand_aliases=brand_aliases)
         
-        # ✅ FIX: Post-process aliases separately to ensure they only affect Brand Mention, not Position
-        if brand_aliases and len(brand_aliases) > 0:
-            import re
-            logger.info(" Checking for brand aliases in responses with no main brand mention...")
-            alias_patterns = [re.compile(re.escape(alias.strip()), re.IGNORECASE) for alias in brand_aliases if alias and alias.strip()]
-            
-            for result in scored_results:
-                # Only check if main brand was NOT found (score is 0)
-                if result['scores']['mention_score'] == 0:
-                    response_text = result['response']
-                    
-                    found_alias = False
-                    for pattern in alias_patterns:
-                        if pattern.search(response_text):
-                            found_alias = True
-                            break
-                    
-                    if found_alias:
-                        # Force update mention score and visibility ONLY
-                        # Leave position_score, richness_score, keyword_score as 0 (calculated by main logic)
-                        result['scores']['mention_score'] = 1
-                        result['scores']['normalized_visibility'] = 100.0
-                        result['scores']['brand_mention_score'] = 1
-                        result['visibility_score'] = 100.0
-                        
-                        # Recalculate weighted score with the new mention score
-                        # (1 * 0.3) + (0 * 0.4) + (0 * 0.2) + (0 * 0.1) = 0.3
-                        # We use the existing function to be safe, or just do manual math since we know others are 0
-                        from services.scoring_engine import calculate_weighted_score
-                        new_weighted = calculate_weighted_score(
-                            1, 
-                            result['scores']['position_score'], 
-                            result['scores']['richness_score'], 
-                            result['scores']['keyword_score']
-                        )
-                        result['scores']['weighted_score'] = new_weighted
-                        result['scores']['total_score'] = min(100, new_weighted)
-
-
         logger.info(f" Scored {len(scored_results)} results")
         
         # Save LLM responses WITH CITATIONS to database
@@ -2066,12 +2066,12 @@ async def execute_prompts_workflow(
         logger.info(f"   - Share of Voice: {'Yes' if sov_data else 'No'}")
         
     except Exception as e:
-        logger.error(f" Error in prompt execution workflow: {str(e)}", exc_info=True)
-        # ✅ FIX: Update DB with error status
+        logger.error(f"❌ Error in prompt execution workflow: {str(e)}", exc_info=True)
+        # ✅ FIX: Preserve selected prompts/cohorts on error so user can re-try without losing selected prompts
         update_session_status(
             session_id, 
-            status="error", 
-            error=str(e)
+            status="pending_selection", 
+            error=f"Execution error: {str(e)}. Your selected prompts are preserved — click Run Analysis to retry."
         )
 
 def update_progress(session_id: str, progress: int, step: str):
@@ -2280,45 +2280,7 @@ async def run_analysis_with_saved_prompts(
             raise Exception("No LLM responses received in re-analysis")
         update_progress(session_id, 60, " Recalculating scores...")
         # Step 2: Calculate scores
-        scored_results = calculate_scores(llm_responses, brand_name, keywords, competitors=competitors_list)
-
-        # ✅ FIX: Post-process aliases separately to ensure they only affect Brand Mention, not Position
-        if brand_aliases and len(brand_aliases) > 0:
-            import re
-            logger.info(" Checking for brand aliases in responses with no main brand mention...")
-            alias_patterns = [re.compile(re.escape(alias.strip()), re.IGNORECASE) for alias in brand_aliases if alias and alias.strip()]
-            
-            for result in scored_results:
-                # Only check if main brand was NOT found (score is 0)
-                if result['scores']['mention_score'] == 0:
-                    response_text = result['response']
-                    
-                    found_alias = False
-                    for pattern in alias_patterns:
-                        if pattern.search(response_text):
-                            found_alias = True
-                            break
-                    
-                    if found_alias:
-                        # Force update mention score and visibility ONLY
-                        # Leave position_score, richness_score, keyword_score as 0 (calculated by main logic)
-                        result['scores']['mention_score'] = 1
-                        result['scores']['normalized_visibility'] = 100.0
-                        result['scores']['brand_mention_score'] = 1
-                        result['visibility_score'] = 100.0
-                        
-                        # Recalculate weighted score with the new mention score
-                        # (1 * 0.3) + (0 * 0.4) + (0 * 0.2) + (0 * 0.1) = 0.3
-                        # We use the existing function to be safe, or just do manual math since we know others are 0
-                        from services.scoring_engine import calculate_weighted_score
-                        new_weighted = calculate_weighted_score(
-                            1, 
-                            result['scores']['position_score'], 
-                            result['scores']['richness_score'], 
-                            result['scores']['keyword_score']
-                        )
-                        result['scores']['weighted_score'] = new_weighted
-                        result['scores']['total_score'] = min(100, new_weighted)
+        scored_results = calculate_scores(llm_responses, brand_name, keywords, competitors=competitors_list, brand_aliases=brand_aliases)
         # Step 3: Save LLM responses and scores
         for result in scored_results:
             prompt_index = result.get('prompt_index', 0)
@@ -2443,8 +2405,16 @@ async def update_competitors_and_recalculate(
     user_id: str = Depends(get_current_user)
 ):
     try:
-        # 1. Update Competitors
+        max_competitors = 10
         new_competitors = list(set([c.strip() for c in request.competitors if c.strip()]))
+        
+        if len(new_competitors) > max_competitors:
+             raise HTTPException(
+                status_code=400,
+                detail=f"Competitor limit reached. You are only allowed to track up to {max_competitors} competitors."
+            )
+            
+        # 1. Update Competitors
         replace_session_competitors(session_id, new_competitors)
         
         # 2. Get Session Data
@@ -2464,11 +2434,13 @@ async def update_competitors_and_recalculate(
                 'citations': row.get('citations', [])
             })
 
+        brand_aliases = session_results['session'].get('brand_aliases', [])
         scored_results = calculate_scores(
             formatted_responses, 
             session_results['session']['brand_name'], 
             session_results['session']['keywords'], 
-            competitors=new_competitors
+            competitors=new_competitors,
+            brand_aliases=brand_aliases
         )
 
         # 4. Save New Scores
@@ -2478,7 +2450,7 @@ async def update_competitors_and_recalculate(
 
         # 5. Recalculate Share of Voice
         if new_competitors:
-             sov_data = calculate_share_of_voice(scored_results, new_competitors)
+             sov_data = calculate_share_of_voice(scored_results, new_competitors, brand_aliases=brand_aliases)
              if sov_data and 'ranked_brands' in sov_data:
                 for rank, brand in enumerate(sov_data['ranked_brands'], 1):
                     save_share_of_voice(
@@ -2495,9 +2467,12 @@ async def update_competitors_and_recalculate(
         
         return {"success": True, "competitor_count": len(new_competitors)}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in recalculation: {str(e)}")
+        logger.error(f"Error in recalculation: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============= PROJECT MANAGEMENT ENDPOINTS =============
 

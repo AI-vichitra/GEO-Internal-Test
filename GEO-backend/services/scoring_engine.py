@@ -4,14 +4,20 @@ from typing import Dict, List, Any
 from dotenv import load_dotenv
 load_dotenv()
 
-def calculate_scores(responses, brand_name, keywords=None, competitors=None):
+def calculate_scores(responses, brand_name, keywords=None, competitors=None, brand_aliases=None):
     """
     Calculate visibility scores for each response
     
     Updated: Uses relative ranking logic (Brand vs Competitors order)
+    Support for brand_aliases: If main brand not found, check aliases for mention/visibility
     """
     
     scored_results = []
+    
+    # Pre-compile alias patterns for performance
+    alias_patterns = []
+    if brand_aliases:
+        alias_patterns = [re.compile(re.escape(alias.strip()), re.IGNORECASE) for alias in brand_aliases if alias and alias.strip()]
     
     for response_data in responses:
         if response_data.get('error'):
@@ -26,28 +32,39 @@ def calculate_scores(responses, brand_name, keywords=None, competitors=None):
         # 1. Calculate Mention Score (0 or 1)
         mention_score = calculate_mention_score(response_text, brand_name)
         
+        # Check aliases if main brand was NOT found
+        found_via_alias = False
+        if mention_score == 0 and alias_patterns:
+            for pattern in alias_patterns:
+                if pattern.search(response_text):
+                    found_via_alias = True
+                    mention_score = 1
+                    break
+        
         # 2. Calculate Relative Rank (The new logic: 1st, 2nd, 3rd...)
-        # If brand is mentioned, find its rank among competitors. If not, rank is 0.
-        if mention_score > 0:
+        # If brand is mentioned (main name), find its rank among competitors.
+        # Per user request, aliases do NOT contribute to rank/position.
+        main_brand_mentioned = calculate_mention_score(response_text, brand_name) > 0
+        if main_brand_mentioned:
             relative_rank = calculate_relative_rank(response_text, brand_name, competitors)
         else:
             relative_rank = 0
             
         # 3. Calculate Position Score (0-30 points based on rank)
-        # Rank 1 = 30, Rank 2 = 25, Rank 3 = 20, etc. (Decay by 5)
         if relative_rank > 0:
             position_score = max(0, 35 - (relative_rank * 5))
         else:
             position_score = 0
             
         # 4. Calculate existing metrics (Preserving your original logic)
-        richness_score = calculate_richness_score(response_text, brand_name)
-        keyword_score = calculate_keyword_score(response_text, brand_name, keywords)
+        # Note: richness and keyword scores also use the main brand name
+        richness_score = calculate_richness_score(response_text, brand_name) if main_brand_mentioned else 0
+        keyword_score = calculate_keyword_score(response_text, brand_name, keywords) if main_brand_mentioned else 0
         
-        # Visibility is 100% if mentioned, 0% if not
+        # Visibility is 100% if mentioned (via main or alias), 0% if not
         normalized_visibility = 100.0 if mention_score > 0 else 0.0
         
-        # 5. Analysis Metadata (Preserving existing structure, updating position)
+        # 5. Analysis Metadata
         analysis = analyze_brand_context(response_text, brand_name)
         analysis['position'] = relative_rank  # Override with new rank
         
@@ -60,13 +77,13 @@ def calculate_scores(responses, brand_name, keywords=None, competitors=None):
             'brand_name': brand_name,
             'llm_name': llm_name,
             'scores': {
-                'mention_score': mention_score,         # Now 0 or 1
-                'position_score': position_score,       # Derived from Relative Rank
-                'richness_score': richness_score,
-                'keyword_score': keyword_score,
-                'total_score': min(100, weighted_score), # Using weighted as total roughly
+                'mention_score': mention_score,         # 0 or 1 (includes aliases)
+                'position_score': position_score,       # 0 if only found via alias
+                'richness_score': richness_score,       # 0 if only found via alias
+                'keyword_score': keyword_score,         # 0 if only found via alias
+                'total_score': min(100, weighted_score),
                 'normalized_visibility': normalized_visibility,
-                'average_positioning': relative_rank,   # THIS is the metric you wanted (1, 2, 3...)
+                'average_positioning': relative_rank,
                 'weighted_score': weighted_score,
                 'brand_mention_score': mention_score
             },
@@ -102,7 +119,7 @@ def calculate_relative_rank(response_text, brand_name, competitors):
     seen = {brand_lower}
     unique_competitors = []
     if competitors:
-        for comp in competitors:
+        for comp in competitors[:5]:
             if not comp:
                 continue
             comp_lower = comp.lower()
@@ -545,15 +562,14 @@ def aggregate_results(scored_results):
     
     mention_rate = (total_mentions / total_prompts) * 100 if total_prompts > 0 else 0
     
-    # Calculate Average Position
-    # Logic: (1 + 2 + 3) / 3 = 2
-    # We only sum the ranks where the brand appeared
+    # Calculate Rank Score
     if mentioned_results:
         # Extract ranks (average_positioning holds the raw rank now)
         ranks = [r['scores']['average_positioning'] for r in mentioned_results if r['scores']['average_positioning'] > 0]
         
         if ranks:
-            avg_position = sum(ranks) / len(ranks)
+            total_points = sum(max(0, 7 - pos) for pos in ranks)
+            avg_position = total_points * total_mentions
         else:
             avg_position = 0
     else:

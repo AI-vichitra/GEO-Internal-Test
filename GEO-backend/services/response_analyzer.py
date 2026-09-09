@@ -11,7 +11,7 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-DEFAULT_MODEL_STR = "claude-sonnet-4-20250514"
+DEFAULT_MODEL_STR = "claude-sonnet-4-6"
 
 def analyze_responses(prompts):
     """

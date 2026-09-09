@@ -581,7 +581,7 @@ def analyze_pages_batch(pages: List[Dict], api_key: str, user_id: str = None) ->
     try:
         with _build_paid_context(user_id):
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=4096,
                 system=PAGE_ANALYSIS_SYSTEM_PROMPT,
                 messages=[{
@@ -675,7 +675,7 @@ Now generate the best possible llms.txt. Follow the llmstxt.org spec exactly."""
     try:
         with _build_paid_context(user_id):
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=4096,
                 system=LLMS_TXT_GENERATION_SYSTEM_PROMPT,
                 messages=[{

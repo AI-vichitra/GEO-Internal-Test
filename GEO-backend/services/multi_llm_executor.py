@@ -220,11 +220,11 @@ def execute_prompts_multi_llm_sync(prompts: List[str], llms: Optional[List[str]]
                     try:
                         if llm_name == "Claude":
                             response = anthropic_client.messages.create(
-                                model="claude-sonnet-4-20250514",
+                                model="claude-sonnet-4-6",
                                 max_tokens=1000,
                                 tools=[
                                     {
-                                        "type": "web_search_20250305",
+                                        "type": "web_search_20260318",
                                         "name": "web_search"
                                     }
                                 ],

@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Eye, EyeOff, Loader2, AlertCircle } from "lucide-react";
+import { Eye, EyeOff, Loader2, AlertCircle, ArrowLeft } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import { GoogleLogin, CredentialResponse } from "@react-oauth/google";
+import Link from "next/link";
 
 interface SignupPageProps {
   onSuccess: (token: string, userId: string) => void;
@@ -59,12 +60,9 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsLoading(true);
-
     try {
       const endpoint = isSignUp ? "/api/auth/signup" : "/api/auth/login";
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
@@ -73,7 +71,7 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          email,
+          email: email.trim(),
           password,
         }),
       });
@@ -81,40 +79,24 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
       const data = await response.json();
 
       if (!response.ok) {
-        setError(data.detail || (isSignUp ? "Signup failed" : "Login failed"));
-        toast({
-          id: "signup-error",
-          title: "Error",
-          description: data.detail || (isSignUp ? "Signup failed" : "Login failed"),
-          variant: "destructive",
-        });
-        return;
+        throw new Error(data.detail || "Authentication failed");
       }
 
-      // Store token and user info
-      localStorage.setItem("token", data.token);
-      localStorage.setItem("userId", data.user_id);
-      localStorage.setItem("userEmail", data.email);
-
-      // Update auth context
-      login(data.token, data.user_id, data.email, data.subscription);
-
       toast({
-        id: "signup-success",
-        title: "Success",
-        description: data.message,
-        variant: "default",
+        title: isSignUp ? "Account Created!" : "Welcome Back!",
+        description: isSignUp
+          ? "Your account has been created successfully."
+          : "Logged in successfully.",
       });
 
+      login(data.token, data.user_id, data.email, data.subscription);
       onSuccess(data.token, data.user_id);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "An error occurred";
-      setError(errorMessage);
+    } catch (err: any) {
+      setError(err.message || "An error occurred during authentication");
       toast({
-        id: "signup-catch-error",
-        title: "Error",
-        description: errorMessage,
         variant: "destructive",
+        title: "Error",
+        description: err.message || "Authentication failed",
       });
     } finally {
       setIsLoading(false);
@@ -124,20 +106,25 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
   const handleGoogleSuccess = async (credentialResponse: CredentialResponse) => {
     if (!credentialResponse.credential) {
       toast({
-        id: "google-error",
-        title: "Google Login Failed",
-        description: "No credentials returned from Google.",
         variant: "destructive",
+        title: "Google Sign-In Failed",
+        description: "No credential received from Google.",
       });
       return;
     }
 
     setIsLoading(true);
+    setError("");
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/auth/google`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: credentialResponse.credential }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          token: credentialResponse.credential,
+        }),
       });
 
       const data = await response.json();
@@ -146,20 +133,19 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
         throw new Error(data.detail || "Google authentication failed");
       }
 
-      login(data.token, data.user_id, data.email, data.subscription);
       toast({
-        id: "google-success",
-        title: "Success",
-        description: "Successfully signed in with Google",
+        title: "Welcome!",
+        description: "Logged in with Google successfully.",
       });
+
+      login(data.token, data.user_id, data.email, data.subscription);
       onSuccess(data.token, data.user_id);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "An error occurred during Google sign-in";
+    } catch (err: any) {
+      setError(err.message || "Google authentication failed");
       toast({
-        id: "google-auth-error",
-        title: "Google Error",
-        description: errorMessage,
         variant: "destructive",
+        title: "Error",
+        description: err.message || "Google sign-in failed",
       });
     } finally {
       setIsLoading(false);
@@ -167,8 +153,18 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
   };
 
   return (
-    <div className="min-h-[calc(100vh-80px)] w-full flex flex-col items-center justify-center bg-gray-50/50 p-4">
+    <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gray-50/50 p-4 relative">
+      {/* Back Navigation Button */}
+      <Link 
+        href="/"
+        className="absolute top-6 left-6 md:top-8 md:left-10 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all group"
+      >
+        <ArrowLeft className="h-4 w-4 group-hover:-translate-x-1 transition-transform" />
+        <span>Back to Home</span>
+      </Link>
+
       <div className="w-full max-w-[480px] bg-white rounded-2xl shadow-sm border border-gray-100 p-8 md:p-10">
+
         {/* Header Section */}
         <div className="flex flex-col items-center mb-8">
           <div className="h-12 w-12 bg-gray-50 rounded-xl flex items-center justify-center mb-4">

@@ -443,7 +443,7 @@ def evaluate_seo_skills(
         try:
             with _build_paid_context(user_id):
                 response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-6",
                     max_tokens=4096,
                     system=system_prompt,
                     messages=[{

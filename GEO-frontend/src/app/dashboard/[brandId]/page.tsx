@@ -26,6 +26,9 @@ export default function BrandDashboard() {
     const [error, setError] = useState<string | null>(null);
     const [isReanalyzing, setIsReanalyzing] = useState(false);
 
+    // Detect if brandId is a UUID (project ID)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
     useEffect(() => {
         if (!isAuthenticated || !brandName) return;
 
@@ -37,8 +40,8 @@ export default function BrandDashboard() {
                 let resolvedBrandName = decodeURIComponent(brandName);
 
                 // Detect if brandName is a UUID (Project ID)
-                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
                 if (uuidRegex.test(resolvedBrandName)) {
+
                     // It's a project ID, resolve it to a brand name first
                     const projectRes = await fetch(`${API_BASE_URL}/api/projects/${resolvedBrandName}`, {
                         headers: { "Authorization": `Bearer ${token}` }

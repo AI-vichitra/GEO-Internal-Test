@@ -3,8 +3,25 @@ import { Download } from "lucide-react";
 import { useState } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import html2canvas from "html2canvas";
 import type { AnalysisResults as AnalysisResultsType } from "@shared/schema";
+
+
+// ─── Color Palette ────────────────────────────────────────────────────────────
+const C = {
+  teal:      [13, 148, 136]  as [number, number, number],
+  tealLight: [204, 241, 238] as [number, number, number],
+  dark:      [17, 24, 39]    as [number, number, number],
+  mid:       [75, 85, 99]    as [number, number, number],
+  muted:     [156, 163, 175] as [number, number, number],
+  subtle:    [243, 244, 246] as [number, number, number],
+  border:    [229, 231, 235] as [number, number, number],
+  white:     [255, 255, 255] as [number, number, number],
+  green:     [16, 185, 129]  as [number, number, number],
+  amber:     [245, 158, 11]  as [number, number, number],
+  red:       [239, 68, 68]   as [number, number, number],
+  blue:      [59, 130, 246]  as [number, number, number],
+  purple:    [139, 92, 246]  as [number, number, number],
+};
 
 interface PDFReportButtonProps {
   results: AnalysisResultsType;
@@ -14,50 +31,11 @@ interface PDFReportButtonProps {
 export function PDFReportButton({ results, sessionId }: PDFReportButtonProps) {
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // --- CONFIGURATION ---
-  const CONFIG = {
-    colors: {
-      primary: [0, 0, 0] as [number, number, number], // Black
-      secondary: [80, 80, 80] as [number, number, number], // Dark Gray
-      accent: [220, 220, 220] as [number, number, number], // Light Gray (lines/borders)
-      text: [40, 40, 40] as [number, number, number],
-      muted: [120, 120, 120] as [number, number, number],
-      bg: [255, 255, 255] as [number, number, number],
-    },
-    margins: {
-      top: 20,
-      bottom: 20,
-      left: 20,
-      right: 20,
-    },
-    fonts: {
-      head: "helvetica",
-      body: "helvetica",
-    },
-  };
 
-  // --- HELPERS ---
+  // ─── Helpers ───────────────────────────────────────────────────────────────
 
-  const captureChart = async (elementId: string): Promise<string | null> => {
-    try {
-      const element = document.getElementById(elementId);
-      if (!element) return null;
-      // Capture at high scale for print quality
-      const canvas = await html2canvas(element, {
-        scale: 3,
-        backgroundColor: "#ffffff",
-        logging: false,
-        useCORS: true,
-      });
-      return canvas.toDataURL("image/png");
-    } catch (error) {
-      console.error(`Error capturing ${elementId}:`, error);
-      return null;
-    }
-  };
-
-  const loadImageAsBase64 = (path: string): Promise<string> => {
-    return new Promise((resolve, reject) => {
+  const loadImageAsBase64 = (path: string): Promise<string> =>
+    new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = "Anonymous";
       img.src = path;
@@ -72,317 +50,555 @@ export function PDFReportButton({ results, sessionId }: PDFReportButtonProps) {
       };
       img.onerror = reject;
     });
+
+  const sanitizeText = (text: string | undefined | null, maxLen = 9999): string => {
+    if (!text) return "";
+    const patterns = [
+      /An AI Overview is not available for this search/gi,
+      /Can(?:'t| not) generate an AI overview right now(?:\.|)\s*Try again later(?:\.|)/gi,
+      /AI Overview/gi,
+      /Listen\s*Pause/gi,
+    ];
+    let cleaned = text;
+    for (const p of patterns) cleaned = cleaned.replace(p, "");
+    cleaned = cleaned.replace(/\s+/g, " ").trim();
+    return cleaned.length > maxLen ? cleaned.substring(0, maxLen - 3) + "..." : cleaned;
   };
 
-  // --- MAIN GENERATOR ---
+  // Compute deduplicated brand rank from brand_scores
+  const computeBrandRank = () => {
+    if (!results.brand_scores || results.brand_scores.length === 0) return { rank: 0, totalBrands: 0 };
+    const deduped: Record<string, { positions: number[]; vis: number[] }> = {};
+    results.brand_scores.forEach((s: any) => {
+      const k = s.brand.toLowerCase();
+      if (!deduped[k]) deduped[k] = { positions: [], vis: [] };
+      if (s.average_position > 0) deduped[k].positions.push(s.average_position);
+      deduped[k].vis.push(s.visibility_score || 0);
+    });
+    const sorted = Object.entries(deduped)
+      .map(([brand, d]) => ({
+        brand,
+        avgPos: d.positions.length ? d.positions.reduce((a, b) => a + b, 0) / d.positions.length : 0,
+      }))
+      .sort((a, b) => {
+        if (a.avgPos === 0) return 1;
+        if (b.avgPos === 0) return -1;
+        return a.avgPos - b.avgPos;
+      });
+    const idx = sorted.findIndex(m => m.brand === results.brand_name.toLowerCase());
+    return { rank: idx >= 0 ? idx + 1 : 0, totalBrands: sorted.length };
+  };
+
+  // ─── Main Generator ────────────────────────────────────────────────────────
 
   const generatePDF = async () => {
     setIsGenerating(true);
-
     try {
       const pdf = new jsPDF("p", "mm", "a4");
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      const margin = CONFIG.margins.left;
-      const contentWidth = pageWidth - margin * 2;
+      const PW = pdf.internal.pageSize.getWidth();
+      const PH = pdf.internal.pageSize.getHeight();
+      const ML = 18, MR = 18;
+      const CW = PW - ML - MR;
+      let yPos = 0;
 
-      // Helper: Draw Header on content pages
-      const drawPageHeader = (title: string) => {
-        pdf.setFillColor(CONFIG.colors.primary[0], CONFIG.colors.primary[1], CONFIG.colors.primary[2]);
-        // Small accent bar on left
-        pdf.rect(0, 15, 6, 12, "F");
+      const { rank: mainBrandRank, totalBrands } = computeBrandRank();
+      const mentionRate = results.num_prompts > 0
+        ? ((results.average_mentions || 0) / results.num_prompts * 100).toFixed(0)
+        : "0";
 
-        pdf.setFont(CONFIG.fonts.head, "bold");
-        pdf.setFontSize(16);
-        pdf.setTextColor(CONFIG.colors.primary[0], CONFIG.colors.primary[1], CONFIG.colors.primary[2]);
-        pdf.text(title.toUpperCase(), margin, 24);
-
-        // Divider line
-        pdf.setDrawColor(CONFIG.colors.accent[0], CONFIG.colors.accent[1], CONFIG.colors.accent[2]);
-        pdf.line(margin, 30, pageWidth - margin, 30);
+      // ── Shared: page header ─────────────────────────────────────────────────
+      const pageHeader = (title: string, subtitle?: string) => {
+        pdf.setFillColor(...C.teal);
+        pdf.rect(0, 0, PW, 10, "F");
+        pdf.setFillColor(...C.teal);
+        pdf.rect(0, 10, 4, 24, "F");
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(17);
+        pdf.setTextColor(...C.dark);
+        pdf.text(title, ML + 2, 25);
+        if (subtitle) {
+          pdf.setFont("helvetica", "normal");
+          pdf.setFontSize(8.5);
+          pdf.setTextColor(...C.muted);
+          pdf.text(subtitle, ML + 2, 31);
+        }
+        pdf.setDrawColor(...C.border);
+        pdf.setLineWidth(0.3);
+        pdf.line(ML, 36, PW - MR, 36);
+        yPos = 43;
       };
 
-      // Helper: Draw Footer
+      // ── Shared: stat card ───────────────────────────────────────────────────
+      const statCard = (
+        x: number, y: number, w: number, h: number,
+        label: string, value: string,
+        color: [number, number, number] = C.teal
+      ) => {
+        pdf.setFillColor(...C.subtle);
+        pdf.setDrawColor(...C.border);
+        pdf.setLineWidth(0.3);
+        pdf.roundedRect(x, y, w, h, 2, 2, "FD");
+        pdf.setFillColor(...color);
+        pdf.roundedRect(x, y, w, 1.5, 0.5, 0.5, "F");
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7.5);
+        pdf.setTextColor(...C.muted);
+        pdf.text(label.toUpperCase(), x + 5, y + 9);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(18);
+        pdf.setTextColor(...C.dark);
+        pdf.text(value, x + 5, y + 20);
+      };
+
+      // ── Shared: add footers ─────────────────────────────────────────────────
       const addFooters = () => {
-        const totalPages = pdf.getNumberOfPages();
-        for (let i = 1; i <= totalPages; i++) {
+        const total = pdf.getNumberOfPages();
+        for (let i = 2; i <= total; i++) {
           pdf.setPage(i);
-          if (i === 1) continue; // Skip cover
-
-          pdf.setFontSize(8);
-          pdf.setTextColor(CONFIG.colors.muted[0], CONFIG.colors.muted[1], CONFIG.colors.muted[2]);
-
-          // Line above footer
-          pdf.setDrawColor(230, 230, 230);
-          pdf.line(margin, pageHeight - 15, pageWidth - margin, pageHeight - 15);
-
-          const dateStr = new Date().toLocaleDateString();
-          pdf.text(`GEO Analysis • ${dateStr}`, margin, pageHeight - 10);
-          pdf.text(`Page ${i} of ${totalPages}`, pageWidth - margin, pageHeight - 10, { align: "right" });
+          pdf.setDrawColor(...C.border);
+          pdf.setLineWidth(0.3);
+          pdf.line(ML, PH - 12, PW - MR, PH - 12);
+          pdf.setFontSize(7.5);
+          pdf.setFont("helvetica", "normal");
+          pdf.setTextColor(...C.muted);
+          pdf.text(`GEO Brand Visibility Report  •  ${results.brand_name}`, ML, PH - 7);
+          pdf.text(`Page ${i} of ${total}`, PW - MR, PH - 7, { align: "right" });
         }
       };
 
-      // ======================== 1. COVER PAGE ============================
+      // ═══════════════════════════════════════════════════════════════════════
+      // PAGE 1 – COVER
+      // ═══════════════════════════════════════════════════════════════════════
 
-      // LOGO: Top Left
+      // Teal header band
+      pdf.setFillColor(...C.teal);
+      pdf.rect(0, 0, PW, 55, "F");
+
+      // Logo
       try {
         const logo = await loadImageAsBase64("/logo.png");
-        if (logo) {
-          pdf.addImage(logo, "PNG", margin, margin, 60, 20);
-        }
-      } catch (e) {
-        console.warn("Logo not found, skipping");
+        if (logo) pdf.addImage(logo, "PNG", ML, 10, 52, 17);
+      } catch { /* skip */ }
+
+      // Date – top right
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9);
+      pdf.setTextColor(...C.white);
+      const dateStr = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+      pdf.text(dateStr, PW - MR, 18, { align: "right" });
+
+      // Title in band
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(28);
+      pdf.setTextColor(...C.white);
+      pdf.text("Brand Visibility", ML, 37);
+      pdf.setTextColor(...C.tealLight);
+      pdf.text("Analysis Report", ML, 50);
+
+      // Prepared For
+      yPos = 68;
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9);
+      pdf.setTextColor(...C.muted);
+      pdf.text("PREPARED FOR", ML, yPos);
+      yPos += 7;
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(26);
+      pdf.setTextColor(...C.dark);
+      pdf.text(results.brand_name, ML, yPos);
+      yPos += 4;
+      pdf.setFillColor(...C.teal);
+      pdf.rect(ML, yPos, 24, 1.2, "F");
+      yPos += 12;
+
+      // Details
+      const details: [string, string][] = [];
+      if (results.product_name) details.push(["Product / Service", results.product_name]);
+      if (results.industry)     details.push(["Industry", results.industry]);
+      if (results.website_url)  details.push(["Website", results.website_url]);
+      details.forEach(([lbl, val]) => {
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(8.5);
+        pdf.setTextColor(...C.muted);
+        pdf.text(lbl, ML, yPos);
+        pdf.setFont("helvetica", "bold");
+        pdf.setTextColor(...C.mid);
+        pdf.text(val, ML + 40, yPos);
+        yPos += 7;
+      });
+
+      // 4 stat cards
+      yPos = 150;
+      const cardW = (CW - 9) / 4;
+      const cardH = 30;
+      const coverStats = [
+        { label: "Analyzed Prompts", value: String(results.num_prompts || 0),                             color: C.teal  },
+        { label: "Mention Rate",      value: `${mentionRate}%`,                                           color: C.blue  },
+        { label: "Overall Rank",      value: mainBrandRank ? `#${mainBrandRank}` : "—",                   color: C.amber },
+        { label: "Visibility Score",  value: `${(results.average_visibility_score || 0).toFixed(1)}%`,   color: C.green },
+      ];
+      coverStats.forEach((s, i) => {
+        statCard(ML + i * (cardW + 3), yPos, cardW, cardH, s.label, s.value, s.color as [number, number, number]);
+      });
+
+      // Bottom meta strip
+      const bottomY = PH - 30;
+      pdf.setFillColor(...C.subtle);
+      pdf.rect(0, bottomY, PW, 30, "F");
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(8);
+      pdf.setTextColor(...C.muted);
+      pdf.text("SESSION ID", ML, bottomY + 10);
+      pdf.text("GENERATED BY", ML + 90, bottomY + 10);
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(8);
+      pdf.setTextColor(...C.mid);
+      pdf.text(sessionId, ML, bottomY + 18);
+      pdf.text("GEO — AI Visibility Intelligence Platform", ML + 90, bottomY + 18);
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // PAGE 2 – EXECUTIVE SUMMARY
+      // ═══════════════════════════════════════════════════════════════════════
+      pdf.addPage();
+      pageHeader("Executive Summary", `Brand: ${results.brand_name}  •  Analysis Date: ${dateStr}`);
+
+      // 4 metric cards
+      const mc_w = (CW - 6) / 4;
+      const mc_h = 32;
+      const metricCards = [
+        { label: "Total Prompts",   value: String(results.num_prompts || 0),                             color: C.teal  },
+        { label: "Visibility",      value: `${(results.average_visibility_score || 0).toFixed(1)}%`,    color: C.green },
+        { label: "Avg. Position",   value: results.average_position ? results.average_position.toFixed(1) : "—", color: C.blue  },
+        { label: "Mention Rate",    value: `${mentionRate}%`,                                            color: C.amber },
+      ];
+      metricCards.forEach((m, i) => {
+        statCard(ML + i * (mc_w + 2), yPos, mc_w, mc_h, m.label, m.value, m.color as [number, number, number]);
+      });
+      yPos += mc_h + 12;
+
+      // Key Findings
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(11);
+      pdf.setTextColor(...C.dark);
+      pdf.text("Key Findings", ML, yPos);
+      yPos += 9;
+
+      const insights: string[] = [
+        `Your brand appeared in ${mentionRate}% of the ${results.num_prompts || 0} generative AI responses analyzed.`,
+        `Average brand position when mentioned: ${results.average_position ? results.average_position.toFixed(1) : "N/A"}.`,
+        `Overall visibility health score: ${(results.average_visibility_score || 0).toFixed(1)}%, reflecting mention frequency and ranking position.`,
+      ];
+      if (mainBrandRank) {
+        insights.push(`Competitive rank among ${totalBrands} tracked brands: #${mainBrandRank}.`);
+      }
+      if (results.selected_llms && results.selected_llms.length > 0) {
+        insights.push(`Analysis run across ${results.selected_llms.length} AI model${results.selected_llms.length > 1 ? "s" : ""}: ${results.selected_llms.join(", ")}.`);
       }
 
-      // Title Block
-      let yPos = 100;
-
-      pdf.setFont(CONFIG.fonts.head, "bold");
-      pdf.setFontSize(42);
-      pdf.setTextColor(CONFIG.colors.primary[0], CONFIG.colors.primary[1], CONFIG.colors.primary[2]);
-      pdf.text("Brand Visibility", margin, yPos);
-
-      pdf.setFontSize(42);
-      pdf.setTextColor(CONFIG.colors.secondary[0], CONFIG.colors.secondary[1], CONFIG.colors.secondary[2]);
-      pdf.text("Analysis Report", margin, yPos + 16);
-
-      // Accent Line
-      yPos += 30;
-      pdf.setDrawColor(0, 0, 0);
-      pdf.setLineWidth(1);
-      pdf.line(margin, yPos, margin + 20, yPos);
-
-      // Brand Info
-      yPos += 15;
-      pdf.setFontSize(14);
-      pdf.setTextColor(CONFIG.colors.muted[0], CONFIG.colors.muted[1], CONFIG.colors.muted[2]);
-      pdf.text("PREPARED FOR:", margin, yPos);
-
-      yPos += 8;
-      pdf.setFontSize(24);
-      pdf.setTextColor(CONFIG.colors.primary[0], CONFIG.colors.primary[1], CONFIG.colors.primary[2]);
-      pdf.text(results.brand_name, margin, yPos);
-
-      // Metadata
-      const bottomY = pageHeight - 40;
-      pdf.setFontSize(10);
-      pdf.setTextColor(CONFIG.colors.muted[0], CONFIG.colors.muted[1], CONFIG.colors.muted[2]);
-
-      pdf.text("SESSION ID", margin, bottomY);
-      pdf.text("DATE GENERATED", margin + 60, bottomY);
-
-      pdf.setFontSize(10);
-      pdf.setTextColor(CONFIG.colors.text[0], CONFIG.colors.text[1], CONFIG.colors.text[2]);
-      pdf.text(sessionId, margin, bottomY + 6);
-      pdf.text(new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }), margin + 60, bottomY + 6);
-
-
-      // ==================== 2. EXECUTIVE SUMMARY ====================
-      pdf.addPage();
-      drawPageHeader("Executive Summary");
-      yPos = 45;
-
-      // Intro Text
-      pdf.setFontSize(11);
-      pdf.setTextColor(CONFIG.colors.text[0], CONFIG.colors.text[1], CONFIG.colors.text[2]);
-      pdf.text(`An AI-driven analysis of brand presence for ${results.brand_name}.`, margin, yPos);
-      yPos += 15;
-
-      // --- Metrics Grid ---
-      const cardGap = 8;
-      const cardWidth = (contentWidth - cardGap) / 2;
-      const cardHeight = 35;
-
-      const metrics = [
-        { label: "Analyzed Prompts", value: results.num_prompts || 0 },
-        { label: "Brand Mentions", value: results.average_mentions || 0 },
-        { label: "Avg. Position", value: (results.average_position || 0).toFixed(1) },
-        { label: "Visibility Score", value: `${(results.average_visibility_score || 0).toFixed(1)}%` },
-      ];
-
-      metrics.forEach((m, i) => {
-        const col = i % 2;
-        const row = Math.floor(i / 2);
-        const x = margin + col * (cardWidth + cardGap);
-        const y = yPos + row * (cardHeight + cardGap);
-
-        pdf.setFillColor(248, 248, 248);
-        pdf.setDrawColor(230, 230, 230);
-        pdf.roundedRect(x, y, cardWidth, cardHeight, 2, 2, "FD");
-
-        pdf.setFontSize(9);
-        pdf.setTextColor(CONFIG.colors.muted[0], CONFIG.colors.muted[1], CONFIG.colors.muted[2]);
-        pdf.text(m.label.toUpperCase(), x + 6, y + 10);
-
-        pdf.setFontSize(18);
-        pdf.setFont(CONFIG.fonts.head, "bold");
-        pdf.setTextColor(CONFIG.colors.primary[0], CONFIG.colors.primary[1], CONFIG.colors.primary[2]);
-        pdf.text(String(m.value), x + 6, y + 24);
-      });
-
-      yPos += (cardHeight * 2) + cardGap + 20;
-
-      // --- Key Insights ---
-      pdf.setFontSize(14);
-      pdf.setFont(CONFIG.fonts.head, "bold");
-      pdf.text("Key Findings", margin, yPos);
-      yPos += 10;
-
-      pdf.setFont(CONFIG.fonts.body, "normal");
-      pdf.setFontSize(10);
-      pdf.setTextColor(CONFIG.colors.text[0], CONFIG.colors.text[1], CONFIG.colors.text[2]);
-
-      const mentionRate = results.num_prompts > 0
-        ? ((results.average_mentions / results.num_prompts) * 100).toFixed(1)
-        : 0;
-
-      const insights = [
-        `• Your brand appeared in ${mentionRate}% of the generative AI responses analyzed.`,
-        `• On average, when mentioned, your brand ranks at position ${(results.average_position || 0).toFixed(1)}.`,
-        `• The overall visibility health score is ${(results.average_visibility_score || 0).toFixed(1)}%, calculated based on frequency and ranking.`,
-      ];
-
+      pdf.setFont("helvetica", "normal");
+      pdf.setFontSize(9.5);
       insights.forEach((insight) => {
-        pdf.text(insight, margin, yPos);
-        yPos += 8;
+        pdf.setFillColor(...C.teal);
+        pdf.circle(ML + 2.5, yPos - 1.5, 1.5, "F");
+        pdf.setTextColor(...C.mid);
+        const lines = pdf.splitTextToSize(insight, CW - 10);
+        pdf.text(lines, ML + 8, yPos);
+        yPos += lines.length * 5.5 + 4;
       });
 
-      // ==================== 3. SHARE OF VOICE ====================
-      if (results.share_of_voice && results.share_of_voice.length > 0) {
-        pdf.addPage();
-        drawPageHeader("Competitive Landscape");
-        yPos = 40;
+      // Model Distribution table
+      if (results.model_usage && results.model_usage.length > 0) {
+        yPos += 4;
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11);
+        pdf.setTextColor(...C.dark);
+        pdf.text("Model Distribution", ML, yPos);
+        yPos += 6;
 
-        // 1. CHART CAPTURE
-        // Ensure "sov-chart-container" is the ID in share-of-voice-chart.tsx
-        const sovChartImg = await captureChart('sov-chart-container');
-        if (sovChartImg) {
-          const imgHeight = 100;
-          pdf.addImage(sovChartImg, 'PNG', margin, yPos, contentWidth, imgHeight);
-          yPos += imgHeight + 10;
-        }
-
-        // 2. TABLE (Clean: No raw mentions)
-        const sovData = results.share_of_voice.map((item, idx) => [
-          idx + 1,
-          item.brand || 'Unknown',
-          `${(item.percentage || 0).toFixed(1)}%`
+        const modelData = results.model_usage.map((m: any) => [
+          m.model || "Unknown",
+          String(m.count || 0),
+          `${(m.percentage || 0).toFixed(1)}%`,
         ]);
 
         autoTable(pdf, {
           startY: yPos,
-          head: [['Rank', 'Brand', 'Share of Voice']],
-          body: sovData,
-          theme: 'plain',
-          headStyles: {
-            fillColor: CONFIG.colors.primary,
-            textColor: 255,
-            fontStyle: 'bold',
-            halign: 'left',
-            cellPadding: 4
-          },
-          bodyStyles: {
-            textColor: CONFIG.colors.text,
-            cellPadding: 4,
-            lineColor: 240,
-            lineWidth: { bottom: 0.1 }
-          },
-          columnStyles: {
-            0: { cellWidth: 20 },
-            2: { halign: 'right' }
-          },
-          margin: { left: margin, right: margin }
+          head: [["AI Model", "Responses", "Share"]],
+          body: modelData,
+          theme: "plain",
+          headStyles: { fillColor: C.teal, textColor: 255, fontStyle: "bold", cellPadding: 4, fontSize: 9 },
+          bodyStyles: { textColor: C.mid, cellPadding: 4, fontSize: 9 },
+          alternateRowStyles: { fillColor: C.subtle },
+          columnStyles: { 1: { halign: "center" }, 2: { halign: "center" } },
+          margin: { left: ML, right: MR },
         });
+        yPos = (pdf as any).lastAutoTable.finalY + 8;
       }
 
+      // ═══════════════════════════════════════════════════════════════════════
+      // PAGE 3 – COMPETITIVE LANDSCAPE
+      // ═══════════════════════════════════════════════════════════════════════
+      const hasCompetitors = results.brand_scores && results.brand_scores.length > 0;
+      const hasSoV = results.share_of_voice && results.share_of_voice.length > 0;
 
-      // ==================== 4. SOURCE ANALYSIS ====================
+      if (hasCompetitors || hasSoV) {
+        pdf.addPage();
+        pageHeader("Competitive Landscape", "Brand rankings and share of voice analysis");
+
+        if (hasCompetitors) {
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(11);
+          pdf.setTextColor(...C.dark);
+          pdf.text("Brand Rankings", ML, yPos);
+          yPos += 6;
+
+          const deduped: Record<string, { brand: string; positions: number[]; vis: number[]; mr: number[] }> = {};
+          results.brand_scores.forEach((s: any) => {
+            const k = s.brand.toLowerCase();
+            if (!deduped[k]) deduped[k] = { brand: s.brand, positions: [], vis: [], mr: [] };
+            if (s.average_position > 0) deduped[k].positions.push(s.average_position);
+            deduped[k].vis.push(s.visibility_score || 0);
+            deduped[k].mr.push(s.mention_rate || 0);
+          });
+
+          const rankRows = Object.values(deduped)
+            .map(d => ({
+              brand: d.brand,
+              avgPos: d.positions.length ? d.positions.reduce((a, b) => a + b, 0) / d.positions.length : 0,
+              vis: d.vis.reduce((a, b) => a + b, 0) / d.vis.length,
+              mr: d.mr.reduce((a, b) => a + b, 0) / d.mr.length,
+            }))
+            .sort((a, b) => {
+              if (a.avgPos === 0) return 1;
+              if (b.avgPos === 0) return -1;
+              return a.avgPos - b.avgPos;
+            });
+
+          const competitorRows = rankRows.map((r, idx) => [
+            `#${idx + 1}`,
+            r.brand,
+            r.avgPos > 0 ? r.avgPos.toFixed(1) : "—",
+            `${r.vis.toFixed(1)}%`,
+            `${(r.mr * 100).toFixed(0)}%`,
+          ]);
+
+          autoTable(pdf, {
+            startY: yPos,
+            head: [["Rank", "Brand / Competitor", "Avg. Position", "Visibility", "Mention Rate"]],
+            body: competitorRows,
+            theme: "plain",
+            headStyles: { fillColor: C.dark, textColor: 255, fontStyle: "bold", cellPadding: 4, fontSize: 9 },
+            bodyStyles: { textColor: C.mid, cellPadding: 4, fontSize: 9 },
+            alternateRowStyles: { fillColor: C.subtle },
+            didParseCell: (data: any) => {
+              if (data.section === "body") {
+                const rowBrand = competitorRows[data.row.index]?.[1];
+                if (rowBrand && rowBrand.toLowerCase() === results.brand_name.toLowerCase()) {
+                  data.cell.styles.fontStyle = "bold";
+                  data.cell.styles.textColor = C.teal;
+                }
+              }
+            },
+            columnStyles: {
+              0: { cellWidth: 15, halign: "center" },
+              2: { halign: "center" },
+              3: { halign: "center" },
+              4: { halign: "center" },
+            },
+            margin: { left: ML, right: MR },
+          });
+          yPos = (pdf as any).lastAutoTable.finalY + 12;
+        }
+
+        if (hasSoV) {
+          if (yPos > PH - 80) {
+            pdf.addPage();
+            pageHeader("Competitive Landscape (cont.)", "Share of Voice");
+          }
+
+          pdf.setFont("helvetica", "bold");
+          pdf.setFontSize(11);
+          pdf.setTextColor(...C.dark);
+          pdf.text("Share of Voice", ML, yPos);
+          yPos += 6;
+
+          const sovMap = new Map<string, any>();
+          results.share_of_voice.forEach((item: any) => {
+            sovMap.set(item.brand.toLowerCase().trim(), item);
+          });
+          const sovRows = Array.from(sovMap.values())
+            .sort((a: any, b: any) => b.percentage - a.percentage)
+            .map((item: any, idx) => [
+              idx + 1,
+              item.brand || "Unknown",
+              `${(item.percentage || 0).toFixed(1)}%`,
+              String(item.mention_count || 0),
+            ]);
+
+          autoTable(pdf, {
+            startY: yPos,
+            head: [["Rank", "Brand", "Share of Voice", "Mentions"]],
+            body: sovRows,
+            theme: "plain",
+            headStyles: { fillColor: C.teal, textColor: 255, fontStyle: "bold", cellPadding: 4, fontSize: 9 },
+            bodyStyles: { textColor: C.mid, cellPadding: 4, fontSize: 9 },
+            alternateRowStyles: { fillColor: C.subtle },
+            columnStyles: {
+              0: { cellWidth: 15, halign: "center" },
+              2: { halign: "center" },
+              3: { halign: "center" },
+            },
+            margin: { left: ML, right: MR },
+          });
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════
+      // PAGE 4 – SOURCE ANALYSIS
+      // ═══════════════════════════════════════════════════════════════════════
       if (results.domain_citations && results.domain_citations.length > 0) {
         pdf.addPage();
-        drawPageHeader("Source Analysis");
-        yPos = 40;
+        pageHeader("Source Analysis", "Top domains cited by AI models in their responses");
 
-        pdf.setFontSize(10);
-        pdf.setFont(CONFIG.fonts.body, "normal");
-        pdf.text("Top domains cited by AI models:", margin, yPos);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(9.5);
+        pdf.setTextColor(...C.mid);
+        pdf.text(
+          `The following ${Math.min(results.domain_citations.length, 20)} domains were most frequently cited across all ${results.num_prompts || 0} analyzed prompts.`,
+          ML, yPos
+        );
         yPos += 10;
 
-        const citationData = results.domain_citations.slice(0, 15).map((item, idx) => [
+        const citationRows = results.domain_citations.slice(0, 20).map((item: any, idx) => [
           idx + 1,
-          item.domain || 'Unknown',
-          item.citation_count || 0,
-          `${(item.percentage || 0).toFixed(1)}%`
+          item.domain || "Unknown",
+          String(item.citation_count || 0),
+          `${(item.percentage || 0).toFixed(1)}%`,
         ]);
 
         autoTable(pdf, {
           startY: yPos,
-          head: [['#', 'Domain Source', 'Citations', 'Freq.']],
-          body: citationData,
-          theme: 'grid',
-          headStyles: { fillColor: CONFIG.colors.secondary, textColor: 255, fontStyle: 'bold' },
-          styles: { fontSize: 9, cellPadding: 3 },
+          head: [["#", "Domain", "Citations", "Frequency"]],
+          body: citationRows,
+          theme: "plain",
+          headStyles: { fillColor: C.teal, textColor: 255, fontStyle: "bold", cellPadding: 4, fontSize: 9 },
+          bodyStyles: { textColor: C.mid, cellPadding: 4, fontSize: 9 },
+          alternateRowStyles: { fillColor: C.subtle },
           columnStyles: {
-            0: { cellWidth: 15, halign: 'center' },
-            2: { halign: 'center' },
-            3: { halign: 'center' }
+            0: { cellWidth: 12, halign: "center" },
+            2: { halign: "center" },
+            3: { halign: "center" },
           },
-          margin: { left: margin, right: margin }
+          margin: { left: ML, right: MR },
         });
       }
 
-
-      // ==================== 5. PROMPT LOG ====================
+      // ═══════════════════════════════════════════════════════════════════════
+      // PAGE 5+ – PROMPT ANALYSIS LOG
+      // ═══════════════════════════════════════════════════════════════════════
       if (results.llm_responses && results.llm_responses.length > 0) {
-        pdf.addPage();
-        drawPageHeader("Prompt Analysis Log");
-        yPos = 40;
-
-        const promptsData = results.llm_responses.map((response, idx) => {
-          const promptText = response.prompt || "—";
-          const cleanPrompt = promptText.length > 150 ? promptText.substring(0, 147) + "..." : promptText;
-          const mentioned = (response.visibility_score || 0) > 0 ? "Yes" : "No";
-
-          return [
-            idx + 1,
-            cleanPrompt,
-            response.llm_name || "Unknown",
-            mentioned
-          ];
+        // Deduplicate
+        const uniqueMap = new Map<string, any>();
+        results.llm_responses.forEach((r: any) => {
+          uniqueMap.set(`${r.prompt}|${r.llm_name}`, r);
         });
+        const uniqueResponses = Array.from(uniqueMap.values());
+
+        pdf.addPage();
+        pageHeader("Prompt Analysis Log", `${uniqueResponses.length} unique prompts analyzed`);
+
+        const promptRows = uniqueResponses.map((r: any, idx) => [
+          idx + 1,
+          sanitizeText(r.prompt, 160),
+          r.llm_name || r.llm_model || "Unknown",
+          (r.visibility_score || 0) > 0 ? "Yes" : "No",
+          r.visibility_score != null ? `${Number(r.visibility_score).toFixed(0)}%` : "—",
+        ]);
 
         autoTable(pdf, {
           startY: yPos,
-          head: [['#', 'Prompt Query', 'Model', 'Mentioned']],
-          body: promptsData,
-          theme: 'plain',
-          headStyles: {
-            fillColor: CONFIG.colors.primary,
-            textColor: 255,
-            halign: 'left'
-          },
-          bodyStyles: {
-            lineColor: 230,
-            lineWidth: { bottom: 0.1 }
+          head: [["#", "Prompt", "LLM Model", "Mentioned", "Visibility"]],
+          body: promptRows,
+          theme: "plain",
+          headStyles: { fillColor: C.dark, textColor: 255, fontStyle: "bold", cellPadding: 4, fontSize: 8.5 },
+          bodyStyles: { textColor: C.mid, cellPadding: 3.5, fontSize: 8, valign: "middle" },
+          alternateRowStyles: { fillColor: C.subtle },
+          didParseCell: (data: any) => {
+            if (data.section === "body" && data.column.index === 3) {
+              data.cell.styles.fontStyle = "bold";
+              data.cell.styles.textColor = data.cell.raw === "Yes" ? C.green : C.red;
+            }
           },
           columnStyles: {
-            0: { cellWidth: 15, halign: 'center' },
-            1: { cellWidth: 'auto' },
+            0: { cellWidth: 10, halign: "center" },
+            1: { cellWidth: "auto" },
             2: { cellWidth: 30 },
-            3: { cellWidth: 25, halign: 'center' }
+            3: { cellWidth: 22, halign: "center" },
+            4: { cellWidth: 22, halign: "center" },
           },
-          margin: { left: margin, right: margin }
+          margin: { left: ML, right: MR },
         });
+
+        // ── Detailed AI Response Blocks ────────────────────────────────────
+        const detailedResponses = uniqueResponses
+          .filter((r: any) => r.response && r.response.length > 20)
+          .slice(0, 8);
+
+        if (detailedResponses.length > 0) {
+          pdf.addPage();
+          pageHeader("AI Response Details", "Full responses from analyzed prompts");
+
+          detailedResponses.forEach((r: any, idx) => {
+            if (yPos > PH - 55) {
+              pdf.addPage();
+              pageHeader("AI Response Details (cont.)");
+            }
+
+            // Prompt label bar
+            pdf.setFillColor(...C.subtle);
+            pdf.setDrawColor(...C.border);
+            pdf.setLineWidth(0.3);
+            pdf.roundedRect(ML, yPos, CW, 10, 1.5, 1.5, "FD");
+            pdf.setFont("helvetica", "bold");
+            pdf.setFontSize(8.5);
+            pdf.setTextColor(...C.dark);
+            pdf.text(`Q${idx + 1}: ${sanitizeText(r.prompt, 120)}`, ML + 4, yPos + 6.5);
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(...C.teal);
+            pdf.text(r.llm_name || "LLM", PW - MR - 2, yPos + 6.5, { align: "right" });
+            yPos += 13;
+
+            // Response body block
+            const cleanResponse = sanitizeText(r.response, 600);
+            const responseLines = pdf.splitTextToSize(cleanResponse, CW - 8);
+            const maxLines = Math.min(responseLines.length, 18);
+            const blockH = maxLines * 4.2 + 7;
+
+            pdf.setFillColor(252, 252, 252);
+            pdf.setDrawColor(...C.border);
+            pdf.setLineWidth(0.2);
+            pdf.roundedRect(ML, yPos, CW, blockH, 1.5, 1.5, "FD");
+            pdf.setFillColor(...C.teal);
+            pdf.rect(ML, yPos, 2.5, blockH, "F");
+
+            pdf.setFont("helvetica", "normal");
+            pdf.setFontSize(8);
+            pdf.setTextColor(...C.mid);
+            pdf.text(responseLines.slice(0, maxLines), ML + 6, yPos + 5.5);
+            yPos += blockH + 7;
+          });
+        }
       }
 
       // Finalize
       addFooters();
-
-      const fileName = `Report_${results.brand_name.replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.pdf`;
+      const fileName = `GEO_Report_${results.brand_name.replace(/\s+/g, "_")}_${new Date().toISOString().split("T")[0]}.pdf`;
       pdf.save(fileName);
 
     } catch (error) {
-      console.error("PDF Gen Error:", error);
-      alert("Failed to generate report.");
+      console.error("PDF generation error:", error);
+      alert("Failed to generate report. Please try again.");
     } finally {
       setIsGenerating(false);
     }
@@ -392,7 +608,7 @@ export function PDFReportButton({ results, sessionId }: PDFReportButtonProps) {
     <Button
       onClick={generatePDF}
       disabled={isGenerating}
-      className="bg-teal-500 hover:bg-teal-600 text-white gap-2 shadow-md"
+      className="bg-teal-600 hover:bg-teal-700 text-white gap-2 shadow-md transition-all duration-200"
     >
       <Download className="h-4 w-4" />
       {isGenerating ? "Generating..." : "Download Report"}

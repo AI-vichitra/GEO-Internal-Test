@@ -1,4 +1,4 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Query 
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPBasicCredentials
 from pydantic import BaseModel
@@ -48,8 +48,10 @@ from services.database_manager import (
     create_project, get_user_projects, get_project_by_id, 
     update_project, delete_project, add_monitored_prompts, 
     get_monitored_prompts, add_monitored_competitors, 
-    get_monitored_competitors, get_project_dashboard_metrics
+    get_monitored_competitors, get_project_dashboard_metrics,
+    claim_due_projects, release_project_lock, record_daily_metrics
 )
+from services.cron_security import verify_cron_request
 # Setup
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -195,7 +197,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def on_startup():
+    """Start optional in-process scheduler loop (for single-server setups)."""
+    if os.environ.get("ENABLE_SCHEDULER", "false").lower() == "true":
+        from services.scheduler import start_scheduler_loop
+        interval = int(os.environ.get("SCHEDULER_INTERVAL_SECONDS", "3600"))
+        start_scheduler_loop(interval)
+        logger.info(f"✅ In-process scheduler started (interval={interval}s)")
+
 # ============= REQUEST MODELS =============
+
 class SignUpRequest(BaseModel):
     email: str
     password: str
@@ -1261,9 +1273,24 @@ async def update_project_settings(project_id: str, request: ProjectUpdateRequest
         project = get_project_by_id(project_id)
         if not project or project['user_id'] != user_id:
             raise HTTPException(status_code=404, detail="Project not found or access denied")
-            
+
+        # Validate update_frequency if provided
+        from services.database_manager import VALID_FREQUENCIES
         update_data = request.dict(exclude_unset=True)
-        if update_project(project_id, update_data):
+        if 'update_frequency' in update_data and update_data['update_frequency'] not in VALID_FREQUENCIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid update_frequency '{update_data['update_frequency']}'. "
+                       f"Allowed: {', '.join(sorted(VALID_FREQUENCIES))}"
+            )
+
+        # Whitelist: only allow safe fields — never sync_status/sync_started_at
+        ALLOWED_FIELDS = {'name', 'website_url', 'industry', 'update_frequency', 'is_active'}
+        safe_data = {k: v for k, v in update_data.items() if k in ALLOWED_FIELDS}
+        if not safe_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        if update_project(project_id, safe_data):
             return {"status": "success", "message": "Project updated"}
         raise HTTPException(status_code=500, detail="Update failed")
     except HTTPException:
@@ -1305,6 +1332,26 @@ async def get_project_metrics(project_id: str, days: int = Query(30), user_id: s
         logger.error(f"Error getting project metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
+
+# ─── Cron / Webhook endpoint for scheduled analysis ──────────────────────────
+@app.post("/api/cron/process-scheduled-projects")
+async def cron_process_scheduled_projects(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Trigger the scheduler to process all due projects.
+    Protected by HMAC-SHA256 (X-Timestamp + X-Signature headers).
+    """
+    raw_body = await request.body()
+    if not verify_cron_request(dict(request.headers), raw_body):
+        raise HTTPException(status_code=401, detail="Unauthorized: invalid or expired signature")
+
+    from services.scheduler import process_due_projects
+    background_tasks.add_task(process_due_projects)
+    return {"status": "accepted", "message": "Scheduler triggered – processing in background"}
+
+
 @app.post("/api/analysis/generate-custom-cohort-prompts/{session_id}")
 async def generate_custom_cohort_prompts(
     session_id: str,
@@ -2058,6 +2105,14 @@ async def execute_prompts_workflow(
             progress=100,
             step="Analysis complete!"
         )
+
+        # ─── Record daily metrics for trend analytics ─────────────────────
+        try:
+            agg = record_daily_metrics(session_id)
+            logger.info(f" Daily metrics recorded: {agg}")
+        except Exception as agg_err:
+            logger.warning(f" Could not record daily metrics (non-fatal): {agg_err}")
+        # ──────────────────────────────────────────────────────────────────
         
         logger.info(f" Analysis completed for {brand_name}")
         logger.info(f"   - Selected Prompts: {len(selected_prompts)}")

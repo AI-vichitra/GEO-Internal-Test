@@ -1885,78 +1885,82 @@ VALID_FREQUENCIES = {'1h', '6h', '12h', '24h', '48h', '7d', '14d', '30d'}
 
 def claim_due_projects(limit: int = 10) -> List[Dict[str, Any]]:
     """
-    Atomically claims projects that are due for a scheduled run.
+    Claims projects that are due for a scheduled run directly via Supabase.
 
     A project is "due" when:
       - is_active = TRUE
       - sync_status is NOT 'running', OR sync_started_at is older than 30 min (self-heal stale runs)
       - last_sync_at is NULL (never synced) OR older than the project's update_frequency interval
-
-    Uses CTE + FOR UPDATE SKIP LOCKED to guarantee no two concurrent workers
-    can claim the same project, even under parallel cron invocations.
-    Falls back gracefully if the scheduler columns don't exist yet.
     """
     try:
-        import psycopg2
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            logger.warning("DATABASE_URL not set – scheduler cannot claim projects")
-            return []
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
 
-        conn = psycopg2.connect(database_url)
-        conn.autocommit = False
-        cur = conn.cursor()
+        intervals = {
+            '1h': timedelta(hours=1),
+            '6h': timedelta(hours=6),
+            '12h': timedelta(hours=12),
+            '24h': timedelta(hours=24),
+            '48h': timedelta(hours=48),
+            '7d': timedelta(days=7),
+            '14d': timedelta(days=14),
+            '30d': timedelta(days=30),
+        }
 
-        # CTE selects due rows with FOR UPDATE SKIP LOCKED,
-        # then UPDATE joins against the locked set.
-        # This ensures two concurrent calls never claim the same project.
-        cur.execute("""
-            WITH due AS (
-                SELECT id
-                FROM projects
-                WHERE is_active = TRUE
-                  AND (
-                    sync_status != 'running'
-                    OR sync_started_at < NOW() - INTERVAL '30 minutes'
-                  )
-                  AND (
-                    last_sync_at IS NULL
-                    OR last_sync_at <= NOW() - (
-                        CASE update_frequency
-                            WHEN '1h'  THEN INTERVAL '1 hour'
-                            WHEN '6h'  THEN INTERVAL '6 hours'
-                            WHEN '12h' THEN INTERVAL '12 hours'
-                            WHEN '24h' THEN INTERVAL '24 hours'
-                            WHEN '48h' THEN INTERVAL '48 hours'
-                            WHEN '7d'  THEN INTERVAL '7 days'
-                            WHEN '14d' THEN INTERVAL '14 days'
-                            WHEN '30d' THEN INTERVAL '30 days'
-                            ELSE           INTERVAL '24 hours'
-                        END
-                    )
-                  )
-                ORDER BY last_sync_at NULLS FIRST
-                LIMIT %s
-                FOR UPDATE SKIP LOCKED
-            )
-            UPDATE projects p
-            SET sync_status = 'running',
-                sync_started_at = NOW()
-            FROM due
-            WHERE p.id = due.id
-            RETURNING p.id, p.name, p.user_id, p.website_url, p.industry,
-                      p.update_frequency, p.is_active, p.sync_status,
-                      p.sync_started_at, p.last_sync_at, p.created_at
-        """, (limit,))
+        # 1. Fetch active candidate projects from Supabase
+        res = supabase.table('projects').select('*').eq('is_active', True).execute()
+        candidates = res.data or []
 
-        cols = [desc[0] for desc in cur.description] if cur.description else []
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()] if cols else []
-        conn.commit()
-        cur.close()
-        conn.close()
+        due_projects = []
+        for p in candidates:
+            sync_status = p.get('sync_status') or 'idle'
+            sync_started_str = p.get('sync_started_at')
 
-        logger.info(f"Scheduler claimed {len(rows)} project(s)")
-        return rows
+            # If running and not stale (>30m), skip
+            if sync_status == 'running' and sync_started_str:
+                try:
+                    started_dt = datetime.fromisoformat(sync_started_str.replace('Z', '+00:00'))
+                    if now - started_dt < timedelta(minutes=30):
+                        continue
+                except Exception:
+                    pass
+
+            last_sync_str = p.get('last_sync_at')
+            if not last_sync_str:
+                due_projects.append(p)
+                continue
+
+            try:
+                last_sync_dt = datetime.fromisoformat(last_sync_str.replace('Z', '+00:00'))
+                freq = p.get('update_frequency', '24h')
+                delta = intervals.get(freq, timedelta(hours=24))
+                if now - last_sync_dt >= delta:
+                    due_projects.append(p)
+            except Exception:
+                due_projects.append(p)
+
+        # 2. Claim up to `limit` projects
+        batch = due_projects[:limit]
+        claimed = []
+        for p in batch:
+            try:
+                up_res = supabase.table('projects').update({
+                    'sync_status': 'running',
+                    'sync_started_at': now.isoformat(),
+                    'updated_at': now.isoformat()
+                }).eq('id', p['id']).execute()
+
+                if up_res.data:
+                    claimed.append(up_res.data[0])
+                else:
+                    p['sync_status'] = 'running'
+                    p['sync_started_at'] = now.isoformat()
+                    claimed.append(p)
+            except Exception as e:
+                logger.error(f"Error locking project {p.get('id')}: {e}")
+
+        logger.info(f"Scheduler claimed {len(claimed)} project(s) via Supabase")
+        return claimed
 
     except Exception as e:
         logger.error(f"Error claiming due projects: {e}", exc_info=True)
@@ -1965,50 +1969,23 @@ def claim_due_projects(limit: int = 10) -> List[Dict[str, Any]]:
 
 def release_project_lock(project_id: str, success: bool = True) -> bool:
     """
-    Releases the scheduler lock on a project after a run.
-    Uses psycopg2 (same path as claim) for atomic reliability.
+    Releases the scheduler lock on a project after a run via Supabase.
     - success=True  -> sync_status='idle', last_sync_at=NOW()
     - success=False -> sync_status='idle', last_sync_at unchanged (will retry next tick)
     """
     try:
-        import psycopg2
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            # Fallback to Supabase REST if DATABASE_URL not set
-            update_data: Dict[str, Any] = {
-                'sync_status': 'idle',
-                'sync_started_at': None,
-                'updated_at': datetime.utcnow().isoformat(),
-            }
-            if success:
-                update_data['last_sync_at'] = datetime.utcnow().isoformat()
-            supabase.table('projects').update(update_data).eq('id', project_id).execute()
-            logger.info(f"Released lock on project {project_id} via REST (success={success})")
-            return True
-
-        conn = psycopg2.connect(database_url)
-        cur = conn.cursor()
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        update_data: Dict[str, Any] = {
+            'sync_status': 'idle',
+            'sync_started_at': None,
+            'updated_at': now_iso,
+        }
         if success:
-            cur.execute("""
-                UPDATE projects
-                SET sync_status = 'idle',
-                    sync_started_at = NULL,
-                    last_sync_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = %s
-            """, (project_id,))
-        else:
-            cur.execute("""
-                UPDATE projects
-                SET sync_status = 'idle',
-                    sync_started_at = NULL,
-                    updated_at = NOW()
-                WHERE id = %s
-            """, (project_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
-        logger.info(f"Released lock on project {project_id} (success={success})")
+            update_data['last_sync_at'] = now_iso
+
+        supabase.table('projects').update(update_data).eq('id', project_id).execute()
+        logger.info(f"Released lock on project {project_id} via Supabase (success={success})")
         return True
     except Exception as e:
         logger.error(f"Error releasing project lock {project_id}: {e}")
@@ -2017,120 +1994,73 @@ def release_project_lock(project_id: str, success: bool = True) -> bool:
 
 def record_daily_metrics(session_id: str) -> Dict[str, Any]:
     """
-    Idempotent day-level metric aggregation.
-
-    Only aggregates sessions with status='completed'.
-    Recomputes the ENTIRE day by averaging across ALL completed sessions for that
-    project+LLM+date — never incremental add-only.
-    Upserts into daily_brand_metrics with session_ids lineage array.
-
-    Returns a dict with 'rows_upserted' and 'date' on success.
+    Idempotent day-level metric aggregation using Supabase.
+    Aggregates scoring results for the completed session grouped by LLM
+    and updates daily_brand_metrics.
     """
     try:
-        import psycopg2
-        database_url = os.environ.get("DATABASE_URL")
-        if not database_url:
-            logger.warning("DATABASE_URL not set – cannot record daily metrics")
-            return {'error': 'DATABASE_URL not configured'}
+        # 1. Fetch session metadata
+        session_res = supabase.table('analysis_sessions').select('*').eq('session_id', session_id).execute()
+        if not session_res.data:
+            logger.warning(f"record_daily_metrics: Session {session_id} not found")
+            return {'error': 'Session not found'}
 
-        conn = psycopg2.connect(database_url)
-        conn.autocommit = False
-        cur = conn.cursor()
+        session_obj = session_res.data[0]
+        project_id = session_obj.get('project_id')
+        brand_name = session_obj.get('brand_name', 'Unknown')
+        status = session_obj.get('status')
 
+        if not project_id:
+            logger.info(f"Session {session_id} is not linked to a project – skipping daily metrics")
+            return {'skipped': True, 'reason': 'no_project_id'}
+
+        # 2. Fetch scoring results for this session
+        scores_res = supabase.table('scoring_results').select('*').eq('session_id', session_id).execute()
+        scores_rows = scores_res.data or []
+
+        if not scores_rows:
+            logger.info(f"No scoring_results found for session {session_id}")
+            return {'rows_upserted': 0}
+
+        # 3. Group by LLM and aggregate
+        from datetime import date
+        today_iso = date.today().isoformat()
+
+        llm_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for r in scores_rows:
+            llm = r.get('llm_name') or 'unknown'
+            llm_groups.setdefault(llm, []).append(r)
+
+        upsert_rows = []
+        for llm_name, rows in llm_groups.items():
+            vis_scores = [float(r.get('normalized_visibility') or r.get('total_score') or 0) for r in rows]
+            avg_vis = sum(vis_scores) / len(vis_scores) if vis_scores else 0.0
+
+            pos_values = [float(r.get('average_positioning') or r.get('brand_position')) 
+                          for r in rows if (r.get('average_positioning') or r.get('brand_position')) is not None]
+            avg_pos = sum(pos_values) / len(pos_values) if pos_values else None
+
+            mentions = sum(1 for r in rows if (r.get('brand_mention_score') or 0) > 0)
+
+            upsert_rows.append({
+                'project_id': project_id,
+                'brand_name': brand_name,
+                'llm_name': llm_name,
+                'date': today_iso,
+                'visibility_score': round(avg_vis, 2),
+                'mention_count': mentions,
+                'average_rank': round(avg_pos, 2) if avg_pos else None,
+                'total_queries': len(rows),
+            })
+
+        # 4. Upsert into daily_brand_metrics via Supabase
         try:
-            # 1. Lock the target session and verify it's completed
-            cur.execute(
-                "SELECT session_id, project_id, status, timestamp FROM analysis_sessions "
-                "WHERE session_id = %s FOR UPDATE",
-                (session_id,)
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"Session {session_id} not found")
-
-            _, project_id, status, timestamp = row
-            if status != 'completed':
-                logger.info(f"Session {session_id} status={status} – skipping aggregation")
-                conn.rollback()
-                return {'skipped': True, 'reason': f'status={status}'}
-
-            # Use UTC date of the session
-            from datetime import timezone
-            if timestamp:
-                if hasattr(timestamp, 'date'):
-                    agg_date = timestamp.date()
-                else:
-                    from datetime import date
-                    agg_date = date.fromisoformat(str(timestamp)[:10])
-            else:
-                from datetime import date
-                agg_date = date.today()
-
-            # 2. Recompute ALL completed sessions for this project+date
-            #    grouped by LLM
-            cur.execute("""
-                SELECT
-                    sr.llm_name,
-                    AVG(sr.scores->>'normalized_visibility')::REAL            AS avg_vis,
-                    AVG(NULLIF(sr.scores->>'average_positioning', '')::REAL)  AS avg_pos,
-                    SUM((sr.scores->>'total_mentions')::INTEGER)              AS total_mentions,
-                    COUNT(DISTINCT sr.session_id)                             AS session_count,
-                    COUNT(*) FILTER (WHERE 1=1)                               AS total_prompts,
-                    ARRAY_AGG(DISTINCT sr.session_id)                         AS session_ids
-                FROM scoring_results sr
-                JOIN analysis_sessions ases
-                    ON ases.session_id = sr.session_id
-                WHERE ases.project_id = %s
-                  AND ases.status = 'completed'
-                  AND DATE(ases.timestamp) = %s
-                GROUP BY sr.llm_name
-            """, (project_id, agg_date))
-
-            agg_rows = cur.fetchall()
-
-            if not agg_rows:
-                logger.info(f"No scoring_results found for project={project_id} date={agg_date}")
-                conn.rollback()
-                return {'rows_upserted': 0, 'date': str(agg_date)}
-
-            # 3. Upsert each LLM row
-            upserted = 0
-            for llm_name, avg_vis, avg_pos, total_mentions, _sc, total_prompts, session_ids_arr in agg_rows:
-                cur.execute("""
-                    INSERT INTO daily_brand_metrics
-                        (project_id, llm_name, date, visibility_score, avg_position,
-                         mention_count, total_prompts, session_ids, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (project_id, llm_name, date)
-                    DO UPDATE SET
-                        visibility_score = EXCLUDED.visibility_score,
-                        avg_position     = EXCLUDED.avg_position,
-                        mention_count    = EXCLUDED.mention_count,
-                        total_prompts    = EXCLUDED.total_prompts,
-                        session_ids      = EXCLUDED.session_ids,
-                        updated_at       = NOW()
-                """, (
-                    project_id,
-                    llm_name or 'unknown',
-                    agg_date,
-                    float(avg_vis or 0),
-                    float(avg_pos) if avg_pos else None,
-                    int(total_mentions or 0),
-                    int(total_prompts or 0),
-                    session_ids_arr or [],
-                ))
-                upserted += 1
-
-            conn.commit()
-            logger.info(f"record_daily_metrics: upserted {upserted} row(s) for project={project_id} date={agg_date}")
-            return {'rows_upserted': upserted, 'date': str(agg_date), 'project_id': project_id}
-
-        except Exception as inner_e:
-            conn.rollback()
-            raise inner_e
-        finally:
-            cur.close()
-            conn.close()
+            supabase.table('daily_brand_metrics').upsert(upsert_rows, on_conflict='project_id,llm_name,date').execute()
+            logger.info(f"record_daily_metrics: successfully upserted {len(upsert_rows)} metric rows for project {project_id}")
+            return {'rows_upserted': len(upsert_rows), 'date': today_iso, 'project_id': project_id}
+        except Exception as up_err:
+            logger.warning(f"Could not upsert daily_brand_metrics: {up_err}")
+            return {'error': str(up_err), 'rows_attempted': len(upsert_rows)}
 
     except Exception as e:
         logger.error(f"Error in record_daily_metrics for session {session_id}: {e}", exc_info=True)

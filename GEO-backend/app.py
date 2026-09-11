@@ -374,6 +374,23 @@ def get_current_user(authorization: Optional[str] = Header(None), token_cookie: 
 
     return user_id
 
+def verify_session_owner(session_id: str, user_id: str) -> dict:
+    """
+    Verifies that the session exists and belongs to the authenticated user.
+    Prevents IDOR (Insecure Direct Object Reference).
+    Returns the session metadata dictionary on success.
+    """
+    session_metadata = get_session_metadata(session_id)
+    if not session_metadata:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    stored_user_id = session_metadata.get('user_id')
+    if stored_user_id and str(stored_user_id) != str(user_id):
+        logger.warning(f"🚫 Access denied: User {user_id} tried to access session {session_id} owned by {stored_user_id}")
+        raise HTTPException(status_code=403, detail="Access denied: you do not have permission to access this session")
+
+    return session_metadata
+
 # ============= AUTHENTICATION ENDPOINTS =============
 @app.post("/api/auth/signup")
 async def signup(request: SignUpRequest):
@@ -1000,6 +1017,9 @@ async def execute_custom_prompts_endpoint(
         
         if not request.llms:
              raise HTTPException(status_code=400, detail="No LLMs selected")
+
+        # Verify session ownership
+        verify_session_owner(session_id, user_id)
             
         # Update Status to indicate we are starting
         update_session_status(session_id, status="running", progress=0, step="Queuing Custom Analysis...")
@@ -1355,18 +1375,16 @@ async def cron_process_scheduled_projects(
 @app.post("/api/analysis/generate-custom-cohort-prompts/{session_id}")
 async def generate_custom_cohort_prompts(
     session_id: str,
-    request: dict
+    request: dict,
+    user_id: str = Depends(get_current_user)
 ):
     """
     Generate prompts for a user-created custom cohort.
     User provides cohort name/description, backend generates 5 prompts.
     """
     try:
-        # Verify session exists in database
-        from services.database_manager import get_session_results
-        session_check = get_session_results(session_id)
-        if not session_check:
-            raise HTTPException(status_code=404, detail="Session not found")
+        # Verify session exists and belongs to the authenticated user
+        session_metadata = verify_session_owner(session_id, user_id)
         
         cohort_name = request.get("cohort_name", "").strip()
         cohort_description = request.get("cohort_description", "").strip()
@@ -1377,18 +1395,13 @@ async def generate_custom_cohort_prompts(
         logger.info(f" Generating prompts for custom cohort: {cohort_name}")
         
         # Get session data for context
-        from services.database_manager import get_session_results, get_cohorts_for_session, save_custom_cohort, save_prompts_with_cohorts
+        from services.database_manager import get_cohorts_for_session, save_custom_cohort, save_prompts_with_cohorts
         
-        session_data = get_session_results(session_id)
-        if not session_data or 'session' not in session_data:
-            raise HTTPException(status_code=404, detail="Session data not found")
-        
-        session_metadata = session_data['session']
         brand_name = session_metadata.get('brand_name')
-        product_name = session_metadata.get('product_name')  #  Correct
-        research_data = session_metadata.get('research_data', {})  #  Correct
-        keywords = session_metadata.get('keywords', [])  #  Correct
-        industry = session_metadata.get('industry')  #  Correct   
+        product_name = session_metadata.get('product_name')  # Correct
+        research_data = session_metadata.get('research_data', {})  # Correct
+        keywords = session_metadata.get('keywords', [])  # Correct
+        industry = session_metadata.get('industry')  # Correct   
         
         # Create cohort dict for prompt generation
         custom_cohort = {
@@ -1450,23 +1463,19 @@ async def generate_custom_cohort_prompts(
 async def execute_selected_prompts(
     session_id: str,
     request: dict,
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    user_id: str = Depends(get_current_user)
 ):
     """
     Execute analysis with user-selected/custom cohorts and prompts
     """
     try:
         logger.info(f"📥 Received execute-selected-prompts request for {session_id}: {json.dumps(request)}")
-        # Check if session exists in database
-        from services.database_manager import get_session_results
-        session_data = get_session_results(session_id)
-        
-        if not session_data:
-            logger.warning(f"❌ Session not found: {session_id}")
-            raise HTTPException(status_code=404, detail="Session not found")
+        # Check if session exists in database and belongs to the authenticated user
+        session_metadata = verify_session_owner(session_id, user_id)
         
         # ── 1. Plan-Based Limit Enforcement ────────────────────────────────
-        session_user_id = session_data.get('session', {}).get('user_id')
+        session_user_id = session_metadata.get('user_id') or user_id
         sub_status = get_subscription_status(session_user_id) if session_user_id else None
         raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
         plan_name = raw_plan.lower() if raw_plan else "free"
@@ -1630,18 +1639,22 @@ async def execute_selected_prompts(
         raise HTTPException(status_code=500, detail=str(e))
         
 @app.post("/api/analysis/validate-selection/{session_id}")
-async def validate_selection(session_id: str, request: dict):
+async def validate_selection(
+    session_id: str,
+    request: dict,
+    user_id: str = Depends(get_current_user)
+):
     """
     Validate user's cohort and prompt selection before execution.
     Returns validation errors if any.
     """
     try:
-        # ─── Plan-Based Validation ───
-        # Get session user to fetch plan limits
-        session_response = supabase.table('analysis_sessions').select('user_id').eq('session_id', session_id).execute()
-        user_id = session_response.data[0].get('user_id') if session_response.data else None
+        # Verify session exists and belongs to the authenticated user
+        session_metadata = verify_session_owner(session_id, user_id)
+        session_user_id = session_metadata.get('user_id') or user_id
         
-        sub_status = get_subscription_status(user_id) if user_id else None
+        # ─── Plan-Based Validation ───
+        sub_status = get_subscription_status(session_user_id) if session_user_id else None
         raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
         plan_name = raw_plan.lower() if raw_plan else "free"
         limits = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["free"])
@@ -2468,6 +2481,9 @@ async def update_competitors_and_recalculate(
                 status_code=400,
                 detail=f"Competitor limit reached. You are only allowed to track up to {max_competitors} competitors."
             )
+
+        # 0. Verify session ownership
+        verify_session_owner(session_id, user_id)
             
         # 1. Update Competitors
         replace_session_competitors(session_id, new_competitors)

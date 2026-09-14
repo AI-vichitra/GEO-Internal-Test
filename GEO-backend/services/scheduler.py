@@ -175,7 +175,7 @@ async def process_due_projects() -> dict:
                 user_id,
                 None,                           # product_name
                 project.get("website_url"),     # website_url
-                {},                             # research_data
+                {"is_scheduled": True},         # research_data: mark as automated run
                 [],                             # keywords
                 project.get("industry"),        # industry
                 project_id,                     # project_id

@@ -2127,21 +2127,25 @@ async def execute_prompts_workflow(
             logger.warning(f" Could not record daily metrics (non-fatal): {agg_err}")
         # ──────────────────────────────────────────────────
 
-        # ─── Auto-seed monitored_prompts so the scheduler can run tomorrow ──
-        # Runs only when the project has no existing monitored prompts, which
-        # happens on the first-ever analysis for a newly created project.
+        # ─── Sync monitored_prompts with user's selected prompts ─────────────
+        # When a user manually selects prompts in the UI, sync them to monitored_prompts.
+        # Scheduled runs (is_scheduled=True) do NOT overwrite, ensuring the user's
+        # manual selection remains locked in until the user edits them again.
         try:
             _project_id = session_metadata.get("project_id")
-            if _project_id and selected_prompts:
-                from services.database_manager import get_monitored_prompts as _get_mp, add_monitored_prompts as _add_mp
-                if not _get_mp(_project_id):
-                    _add_mp(_project_id, selected_prompts)
-                    logger.info(
-                        f" Auto-seeded {len(selected_prompts)} prompts into "
-                        f"monitored_prompts for project {_project_id}"
-                    )
-        except Exception as _seed_err:
-            logger.warning(f" Could not auto-seed monitored_prompts (non-fatal): {_seed_err}")
+            _research_data = session_metadata.get("research_data") or {}
+            _is_scheduled = _research_data.get("is_scheduled", False)
+
+            if _project_id and selected_prompts and not _is_scheduled:
+                from services.database_manager import add_monitored_prompts as _add_mp, supabase as _sb
+                _sb.table("monitored_prompts").delete().eq("project_id", _project_id).execute()
+                _add_mp(_project_id, selected_prompts)
+                logger.info(
+                    f" Synced {len(selected_prompts)} user-selected prompts into "
+                    f"monitored_prompts for project {_project_id}"
+                )
+        except Exception as _sync_err:
+            logger.warning(f" Could not sync monitored_prompts (non-fatal): {_sync_err}")
         # ────────────────────────────────────────────────────────────────────
 
         logger.info(f" Analysis completed for {brand_name}")

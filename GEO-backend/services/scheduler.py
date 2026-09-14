@@ -15,7 +15,7 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 
-def _get_prompts_and_llms_for_project(project_id: str, db) -> tuple[List[str], List[str]]:
+def _get_prompts_and_llms_for_project(project_id: str) -> tuple[List[str], List[str]]:
     """
     Returns (prompts, llms) to use for scheduled analysis.
 
@@ -30,10 +30,10 @@ def _get_prompts_and_llms_for_project(project_id: str, db) -> tuple[List[str], L
         (via `llm_responses.llm_name`).
       - Defaults to ["ChatGPT", "Gemini"] only if no previous session or LLMs exist.
     """
-    from services.database_manager import supabase
+    from services.database_manager import supabase, get_monitored_prompts, add_monitored_prompts
 
     # 1. Fetch prompts from monitored_prompts
-    rows = db.get_monitored_prompts(project_id)
+    rows = get_monitored_prompts(project_id)
     prompts = [r["prompt_text"] for r in (rows or []) if r.get("prompt_text")]
 
     # 2. Check latest completed session for fallback prompts & selected LLMs
@@ -77,7 +77,7 @@ def _get_prompts_and_llms_for_project(project_id: str, db) -> tuple[List[str], L
                 ))
                 if session_prompts:
                     prompts = session_prompts
-                    db.add_monitored_prompts(project_id, prompts)
+                    add_monitored_prompts(project_id, prompts)
                     logger.info(
                         f"Scheduler: back-filled {len(prompts)} analyzed prompts into "
                         f"monitored_prompts for project {project_id}"
@@ -107,13 +107,6 @@ async def process_due_projects() -> dict:
         record_daily_metrics,
     )
 
-    # Bundle db helpers so _get_prompts_and_llms_for_project can reference them
-    class _DB:
-        get_monitored_prompts = staticmethod(get_monitored_prompts)
-        add_monitored_prompts = staticmethod(add_monitored_prompts)
-
-    db = _DB()
-
     claimed = claim_due_projects(limit=10)
     if not claimed:
         logger.info("Scheduler: No projects due for sync")
@@ -137,7 +130,7 @@ async def process_due_projects() -> dict:
                 plan = "free"
 
             # 2. Fetch prompts & LLMs from project/previous session
-            selected_prompts, selected_llms = _get_prompts_and_llms_for_project(project_id, db)
+            selected_prompts, selected_llms = _get_prompts_and_llms_for_project(project_id)
             if not selected_prompts:
                 logger.warning(
                     f"Scheduler: Project '{project_name}' ({project_id}) has no "

@@ -15,61 +15,77 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 
-def _get_prompts_for_project(project_id: str, db) -> List[str]:
+def _get_prompts_and_llms_for_project(project_id: str, db) -> tuple[List[str], List[str]]:
     """
-    Returns the list of prompt texts to use for scheduled analysis.
+    Returns (prompts, llms) to use for scheduled analysis.
 
-    Priority:
-      1. Active rows in `monitored_prompts` for the project.
+    Prompts Priority:
+      1. Rows in `monitored_prompts` for the project.
       2. Fallback: prompts from the most recent completed analysis session
-         (via `prompts_cohort_mapping`). These are also back-filled into
-         `monitored_prompts` so subsequent runs use priority-1 directly.
+         (via `llm_responses` which contains ONLY the user-selected analyzed prompts).
+         These are back-filled into `monitored_prompts`.
 
-    Returns an empty list only when no prompts exist anywhere.
+    LLMs:
+      - Inherits the exact set of LLMs analyzed in the previous completed session
+        (via `llm_responses.llm_name`).
+      - Defaults to ["ChatGPT", "Gemini"] only if no previous session or LLMs exist.
     """
-    # Priority 1 – monitored_prompts table
-    rows = db.get_monitored_prompts(project_id)
-    prompts = [r["prompt_text"] for r in (rows or []) if r.get("prompt_text")]
-    if prompts:
-        return prompts
-
-    # Priority 2 – latest completed session via prompts_cohort_mapping
     from services.database_manager import supabase
 
-    session_res = (
-        supabase.table("analysis_sessions")
-        .select("session_id")
-        .eq("project_id", project_id)
-        .eq("status", "completed")
-        .order("timestamp", desc=True)
-        .limit(1)
-        .execute()
-    )
-    if not session_res.data:
-        return []
+    # 1. Fetch prompts from monitored_prompts
+    rows = db.get_monitored_prompts(project_id)
+    prompts = [r["prompt_text"] for r in (rows or []) if r.get("prompt_text")]
 
-    latest_session_id = session_res.data[0]["session_id"]
-    mapping_res = (
-        supabase.table("prompts_cohort_mapping")
-        .select("prompt_text")
-        .eq("session_id", latest_session_id)
-        .execute()
-    )
-    fallback_prompts = [
-        r["prompt_text"]
-        for r in (mapping_res.data or [])
-        if r.get("prompt_text")
-    ]
-
-    if fallback_prompts:
-        # Back-fill into monitored_prompts so future runs skip this fallback path
-        db.add_monitored_prompts(project_id, fallback_prompts)
-        logger.info(
-            f"Scheduler: back-filled {len(fallback_prompts)} prompts into "
-            f"monitored_prompts for project {project_id}"
+    # 2. Check latest completed session for fallback prompts & selected LLMs
+    selected_llms = ["ChatGPT", "Gemini"]
+    try:
+        session_res = (
+            supabase.table("analysis_sessions")
+            .select("session_id")
+            .eq("project_id", project_id)
+            .eq("status", "completed")
+            .order("timestamp", desc=True)
+            .limit(1)
+            .execute()
         )
+        if session_res.data:
+            latest_session_id = session_res.data[0]["session_id"]
 
-    return fallback_prompts
+            # Query llm_responses from previous session
+            resp_res = (
+                supabase.table("llm_responses")
+                .select("prompt_text, llm_name")
+                .eq("session_id", latest_session_id)
+                .execute()
+            )
+            raw_responses = resp_res.data or []
+
+            # Extract distinct LLMs used in that session
+            session_llms = list(dict.fromkeys(
+                r["llm_name"] for r in raw_responses if r.get("llm_name")
+            ))
+            if session_llms:
+                selected_llms = session_llms
+                logger.info(
+                    f"Scheduler: Inherited LLMs from previous session {latest_session_id}: {selected_llms}"
+                )
+
+            # If monitored_prompts was empty, fallback to the exact prompts analyzed in that session
+            if not prompts:
+                session_prompts = list(dict.fromkeys(
+                    r["prompt_text"] for r in raw_responses if r.get("prompt_text")
+                ))
+                if session_prompts:
+                    prompts = session_prompts
+                    db.add_monitored_prompts(project_id, prompts)
+                    logger.info(
+                        f"Scheduler: back-filled {len(prompts)} analyzed prompts into "
+                        f"monitored_prompts for project {project_id}"
+                    )
+    except Exception as e:
+        logger.warning(f"Scheduler: error fetching previous session context for {project_id}: {e}")
+
+    return prompts, selected_llms
 
 
 async def process_due_projects() -> dict:
@@ -91,7 +107,7 @@ async def process_due_projects() -> dict:
         record_daily_metrics,
     )
 
-    # Bundle db helpers so _get_prompts_for_project can reference them
+    # Bundle db helpers so _get_prompts_and_llms_for_project can reference them
     class _DB:
         get_monitored_prompts = staticmethod(get_monitored_prompts)
         add_monitored_prompts = staticmethod(add_monitored_prompts)
@@ -120,8 +136,8 @@ async def process_due_projects() -> dict:
             except Exception:
                 plan = "free"
 
-            # 2. Fetch prompts – with automatic fallback + back-fill
-            selected_prompts = _get_prompts_for_project(project_id, db)
+            # 2. Fetch prompts & LLMs from project/previous session
+            selected_prompts, selected_llms = _get_prompts_and_llms_for_project(project_id, db)
             if not selected_prompts:
                 logger.warning(
                     f"Scheduler: Project '{project_name}' ({project_id}) has no "
@@ -136,15 +152,17 @@ async def process_due_projects() -> dict:
                 )
                 continue
 
+            logger.info(
+                f"Scheduler: Project '{project_name}' running with {len(selected_prompts)} prompts "
+                f"on LLMs: {selected_llms}"
+            )
+
             # 3. Fetch monitored competitors
             # `monitored_competitors` column is `name` (not `competitor_name`)
             competitors_rows = get_monitored_competitors(project_id)
             selected_competitors = [
                 r["name"] for r in (competitors_rows or []) if r.get("name")
             ]
-
-            # 4. Determine LLMs – fall back to sensible defaults
-            selected_llms = project.get("selected_llms") or ["ChatGPT", "Gemini"]
 
             # 5. Create a new session linked to this project
             # save_session signature: (session_id, brand_name, user_id, product_name,

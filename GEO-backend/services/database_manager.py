@@ -2033,24 +2033,31 @@ def record_daily_metrics(session_id: str) -> Dict[str, Any]:
 
         upsert_rows = []
         for llm_name, rows in llm_groups.items():
-            vis_scores = [float(r.get('normalized_visibility') or r.get('total_score') or 0) for r in rows]
+            vis_scores = [
+                float(r.get('normalized_visibility') or r.get('total_score') or 0)
+                for r in rows
+            ]
             avg_vis = sum(vis_scores) / len(vis_scores) if vis_scores else 0.0
 
-            pos_values = [float(r.get('average_positioning') or r.get('brand_position')) 
-                          for r in rows if (r.get('average_positioning') or r.get('brand_position')) is not None]
+            pos_values = [
+                float(r.get('average_positioning') or r.get('brand_position'))
+                for r in rows
+                if (r.get('average_positioning') or r.get('brand_position')) is not None
+            ]
             avg_pos = sum(pos_values) / len(pos_values) if pos_values else None
 
             mentions = sum(1 for r in rows if (r.get('brand_mention_score') or 0) > 0)
 
+            # Column names match the actual daily_brand_metrics schema:
+            # visibility_score, avg_position, mention_count, total_prompts, citation_count, date
             upsert_rows.append({
                 'project_id': project_id,
-                'brand_name': brand_name,
                 'llm_name': llm_name,
                 'date': today_iso,
                 'visibility_score': round(avg_vis, 2),
                 'mention_count': mentions,
-                'average_rank': round(avg_pos, 2) if avg_pos else None,
-                'total_queries': len(rows),
+                'avg_position': round(avg_pos, 2) if avg_pos is not None else None,
+                'total_prompts': len(rows),
             })
 
         # 4. Upsert into daily_brand_metrics via Supabase

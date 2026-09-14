@@ -2092,10 +2092,10 @@ async def execute_prompts_workflow(
                     logger.error(f" Error calculating Share of Voice: {str(e)}", exc_info=True)
                     sov_data = None
             else:
-                logger.info(" ï¸ Competitor list empty after removing main brand.")
+                logger.info(" ï¸  Competitor list empty after removing main brand.")
                 sov_data = None
         else:
-            logger.info(" ï¸ No competitors found - skipping Share of Voice")
+            logger.info(" ï¸  No competitors found - skipping Share of Voice")
             sov_data = None
         
         # Aggregate results
@@ -2125,8 +2125,25 @@ async def execute_prompts_workflow(
             logger.info(f" Daily metrics recorded: {agg}")
         except Exception as agg_err:
             logger.warning(f" Could not record daily metrics (non-fatal): {agg_err}")
-        # ──────────────────────────────────────────────────────────────────
-        
+        # ──────────────────────────────────────────────────
+
+        # ─── Auto-seed monitored_prompts so the scheduler can run tomorrow ──
+        # Runs only when the project has no existing monitored prompts, which
+        # happens on the first-ever analysis for a newly created project.
+        try:
+            _project_id = session_metadata.get("project_id")
+            if _project_id and selected_prompts:
+                from services.database_manager import get_monitored_prompts as _get_mp, add_monitored_prompts as _add_mp
+                if not _get_mp(_project_id):
+                    _add_mp(_project_id, selected_prompts)
+                    logger.info(
+                        f" Auto-seeded {len(selected_prompts)} prompts into "
+                        f"monitored_prompts for project {_project_id}"
+                    )
+        except Exception as _seed_err:
+            logger.warning(f" Could not auto-seed monitored_prompts (non-fatal): {_seed_err}")
+        # ────────────────────────────────────────────────────────────────────
+
         logger.info(f" Analysis completed for {brand_name}")
         logger.info(f"   - Selected Prompts: {len(selected_prompts)}")
         logger.info(f"   - LLM Responses: {len(llm_responses)}")

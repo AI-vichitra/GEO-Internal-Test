@@ -1,0 +1,46 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - staging
+
+jobs:
+  deploy:
+    name: Deploy to GCP Staging VM
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: SSH and Deploy to GCP VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: 22
+          script_stop: true
+          script: |
+            set -e
+            echo "🚀 Navigating to staging directory..."
+            cd ~/GEO-Internal-Test
+
+            echo "📥 Pulling latest changes from staging..."
+            git fetch origin staging
+            git reset --hard origin/staging
+
+            echo "🐍 Updating Backend dependencies..."
+            cd GEO-backend
+            source venv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+
+            echo "⚛️ Building Frontend..."
+            cd ../GEO-frontend
+            npm install --legacy-peer-deps
+            npm run build
+
+            echo "🔄 Reloading PM2 processes..."
+            cd ..
+            pm2 restart ecosystem.config.js --update-env
+            pm2 status
+            echo "✅ Deployment to Staging completed successfully!"

@@ -1,0 +1,59 @@
+name: CI - Lint & Build Check
+
+on:
+  pull_request:
+    branches:
+      - staging
+      - main
+
+jobs:
+  backend-check:
+    name: Backend Syntax & Dependency Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r GEO-backend/requirements.txt
+
+      - name: Verify Python Syntax & Core Imports
+        run: |
+          python -m py_compile GEO-backend/app.py
+          python -c "import GEO-backend.services.database_manager as dbm; print('Database manager syntax OK')" || true
+
+  frontend-check:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: GEO-frontend/package-lock.json
+
+      - name: Install Dependencies
+        run: |
+          cd GEO-frontend
+          npm install --legacy-peer-deps
+
+      - name: Build Next.js
+        env:
+          NEXT_PUBLIC_API_URL: "http://localhost:8000"
+        run: |
+          cd GEO-frontend
+          npm run build

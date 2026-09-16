@@ -812,21 +812,28 @@ def get_session_results_aggregated(session_id: str):
         logger.error(f"Error getting aggregated results: {e}", exc_info=True)
         return None
 
-def get_all_unique_brands():
+def get_all_unique_brands(user_id: Optional[str] = None):
+    """Get unique brand names. Scoped to user_id to prevent cross-tenant data leaks."""
     try:
-        response = supabase.table('analysis_sessions').select('brand_name').execute()
+        query = supabase.table('analysis_sessions').select('brand_name')
+        if user_id:
+            query = query.eq('user_id', user_id)
+        response = query.execute()
         brands = list(set(row['brand_name'] for row in response.data))
         return sorted(brands)
     except Exception as e:
         logger.error(f"Error getting unique brands: {str(e)}")
         return []
 
-def get_recent_sessions_by_brand(brand_name: str, limit: int = 20):
+def get_recent_sessions_by_brand(brand_name: str, limit: int = 20, user_id: Optional[str] = None):
+    """Get recent sessions for a brand. Scoped to user_id to prevent cross-tenant data leaks."""
     try:
-        response = supabase.table('analysis_sessions').select(
+        query = supabase.table('analysis_sessions').select(
             'session_id, brand_name, product_name, website_url, timestamp'
-        ).eq('brand_name', brand_name).order('timestamp', desc=True).limit(limit).execute()
-        
+        ).eq('brand_name', brand_name)
+        if user_id:
+            query = query.eq('user_id', user_id)
+        response = query.order('timestamp', desc=True).limit(limit).execute()
         return response.data
     except Exception as e:
         logger.error(f"Error getting recent sessions by brand: {str(e)}")
@@ -843,16 +850,20 @@ def get_saved_prompts_for_analysis(session_id: str):
         logger.error(f"Error getting saved prompts for analysis: {str(e)}")
         return []
 
-def get_visibility_history_for_same_prompts(brand_name: str, product_name: str, prompts: list):
+def get_visibility_history_for_same_prompts(brand_name: str, product_name: str, prompts: list, user_id: Optional[str] = None):
+    """Get visibility history for same prompts. Scoped to user_id to prevent cross-tenant data leaks."""
     try:
         if not prompts or not brand_name:
             logger.warning("No prompts or brand_name provided for same prompts history")
             return []
         
-        # Get all sessions for this brand
-        sessions_response = supabase.table('analysis_sessions').select(
+        # Get all sessions for this brand, scoped to the authenticated user
+        query = supabase.table('analysis_sessions').select(
             'session_id, timestamp'
-        ).eq('brand_name', brand_name).order('timestamp').execute()
+        ).eq('brand_name', brand_name)
+        if user_id:
+            query = query.eq('user_id', user_id)
+        sessions_response = query.order('timestamp').execute()
         
         sessions = sessions_response.data
         

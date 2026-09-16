@@ -50,3 +50,9 @@ desktop.ini
 .idea/
 .replit
 replit.md
+
+# Tunnel configuration (never commit — contains auth tokens/URLs)
+ngrok.yml
+ngrok.yaml
+*.ngrok.yml
+*.ngrok.yaml

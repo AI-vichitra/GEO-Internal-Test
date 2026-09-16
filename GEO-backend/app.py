@@ -1032,10 +1032,6 @@ async def fork_session(
         logger.error(f"Error forking session: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/analysis/status/{session_id}")
-def get_status(session_id: str):
-    """Get status from DB (Stateless)"""
-    return get_session_status(session_id)
 
 @app.post("/api/analysis/execute-custom-prompts/{session_id}")
 async def execute_custom_prompts_endpoint(
@@ -1097,21 +1093,24 @@ def recent_analyses(user_id: str = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"Error fetching recent analyses: {str(e)}")
     
 @app.get("/api/analysis/status/{session_id}")
-async def get_session_status_endpoint(session_id: str):
-    """Get current analysis progress from database"""
+async def get_session_status_endpoint(session_id: str, user_id: str = Depends(get_current_user)):
+    """Get current analysis progress from database (JWT-protected, session-ownership enforced)"""
     try:
         from services.database_manager import get_session_status
-        
+
+        # IDOR guard: ensure the session belongs to the authenticated user
+        verify_session_owner(session_id, user_id)
+
         status = get_session_status(session_id)
         if not status:
             raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-        
+
         return status
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error fetching status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred")
 
 
 @app.get("/api/results/{session_id}")
@@ -1174,15 +1173,20 @@ def get_results(session_id: str, user_id: str = Depends(get_current_user)):
 
 @app.get("/api/analysis/citations/{session_id}")
 def get_citation_analytics(session_id: str, user_id: str = Depends(get_current_user)):
-    """Get detailed citation analytics for a session"""
+    """Get detailed citation analytics for a session (IDOR-protected)"""
     try:
         from services.database_manager import get_detailed_citation_analytics
-        
+
+        # IDOR guard: ensure the session belongs to the authenticated user
+        verify_session_owner(session_id, user_id)
+
         results = get_detailed_citation_analytics(session_id)
         return results
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting citation analytics: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred")
 
 @app.get("/api/analysis/citations/brand/{brand_name}")
 def get_brand_citation_analytics(brand_name: str, user_id: str = Depends(get_current_user)):
@@ -2238,23 +2242,23 @@ async def get_brand_history(brand_name: str, user_id: str = Depends(get_current_
     
 @app.get("/api/brands")
 def get_all_brands(user_id: str = Depends(get_current_user)):
-    """Get all unique brands for dropdown selector"""
+    """Get unique brands for the authenticated user only (tenant-scoped)"""
     try:
-        brands = get_all_unique_brands()
+        brands = get_all_unique_brands(user_id=user_id)
         return {"brands": brands}
     except Exception as e:
         logger.error(f"Error fetching brands: {str(e)}")
-        return {"brands": [], "error": str(e)}
-    
+        return {"brands": [], "error": "An internal error occurred"}
+
 @app.get("/api/recent-analyses-by-brand/{brand_name}")
 def get_recent_analyses_by_brand(brand_name: str, user_id: str = Depends(get_current_user), limit: int = 20):
-    """Get recent analyses for a specific brand"""
+    """Get recent analyses for a specific brand (tenant-scoped to authenticated user)"""
     try:
-        sessions = get_recent_sessions_by_brand(brand_name, limit)
+        sessions = get_recent_sessions_by_brand(brand_name, limit, user_id=user_id)
         return {"sessions": sessions}
     except Exception as e:
         logger.error(f"Error fetching analyses for brand {brand_name}: {str(e)}")
-        return {"sessions": [], "error": str(e)}
+        return {"sessions": [], "error": "An internal error occurred"}
 @app.get("/api/visibility-history/brand-product/{brand_name}/{product_name}")
 def get_brand_product_history(brand_name: str, product_name: str, user_id: str = Depends(get_current_user)):
     """Get visibility history for brand + product combination (scoped to current user)"""
@@ -2512,8 +2516,8 @@ def get_same_prompts_history(session_id: str, user_id: str = Depends(get_current
         
         logger.info(f"Found {len(prompts)} prompts for matching")
         
-        # Get history
-        history = get_visibility_history_for_same_prompts(brand_name, product_name, prompts)
+        # Get history — scoped to authenticated user so cross-tenant sessions are invisible
+        history = get_visibility_history_for_same_prompts(brand_name, product_name, prompts, user_id=user_id)
         
         logger.info(f" Returning {len(history)} data points for same prompts history")
         return {"history": history}

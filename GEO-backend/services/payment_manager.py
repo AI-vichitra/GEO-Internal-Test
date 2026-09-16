@@ -65,5 +65,23 @@ class PaymentManager:
             logger.error(f"Razorpay signature verification failed: {str(e)}")
             return False
 
+    def fetch_order(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch order details from Razorpay API.
+        Returns the order dict including 'amount', 'currency', and 'status'.
+        Used for server-side price verification to prevent plan escalation attacks.
+        """
+        if not self.client:
+            logger.error("Razorpay client not initialized")
+            return None
+
+        try:
+            order = self.client.order.fetch(order_id)
+            logger.info(f"Fetched Razorpay order: {order_id}, amount={order.get('amount')}, status={order.get('status')}")
+            return order
+        except Exception as e:
+            logger.error(f"Error fetching Razorpay order {order_id}: {str(e)}")
+            return None
+
 # Global instance
 payment_manager = PaymentManager()

@@ -63,6 +63,18 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 # Log presence (not value) to help debug invalid tokens in different environments
 logger.info(f"JWT secret present: {bool(JWT_SECRET)}; length={len(JWT_SECRET) if JWT_SECRET else 0}")
+
+# ============= CANONICAL PLAN PRICING (server-side source of truth) =============
+# All amounts in paise (1 INR = 100 paise). Never trust client-supplied amounts.
+PLAN_PRICES = {
+    "lite plan":    {"monthly": 240000,  "yearly": 2400000},
+    "growth plan":  {"monthly": 650000,  "yearly": 6500000},
+    "pro plan":     {"monthly": 1150000, "yearly": 11500000},
+    "enterprise":   {"monthly": 3700000, "yearly": 37000000},
+    "lite":         {"monthly": 240000,  "yearly": 2400000},
+    "growth":       {"monthly": 650000,  "yearly": 6500000},
+    "pro":          {"monthly": 1150000, "yearly": 11500000},
+}
  
 # Initialize Supabase client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -222,13 +234,13 @@ class GoogleAuthRequest(BaseModel):
 class RazorpayOrderRequest(BaseModel):
     plan_name: str
     billing_cycle: str
-    user_id: str
+    user_id: Optional[str] = None  # Ignored server-side; identity comes from JWT
 
 class RazorpayVerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
-    user_id: str
+    user_id: Optional[str] = None  # Ignored server-side; identity comes from JWT
     plan_name: str
     billing_cycle: str
 
@@ -576,41 +588,37 @@ async def get_current_user_info_alias(request: Request):
 # ============= PAYMENT ENDPOINTS (RAZORPAY) =============
 
 @app.post("/api/payments/razorpay/create-order")
-async def create_razorpay_order(request: RazorpayOrderRequest):
-    """Create a new Razorpay order for a specific plan"""
+async def create_razorpay_order(
+    request: RazorpayOrderRequest,
+    current_user_id: str = Depends(get_current_user)
+):
+    """Create a new Razorpay order for a specific plan (JWT-protected)"""
     try:
-        # Define prices in Paise (100 Paise = 1 INR)
-        # lite plan, growth plan, pro plan
-        prices = {
-            "lite plan": {"monthly": 240000, "yearly": 2400000},
-            "growth plan": {"monthly": 650000, "yearly": 6500000},
-            "pro plan": {"monthly": 1150000, "yearly": 11500000},
-            "enterprise": {"monthly": 3700000, "yearly": 37000000}
-        }
-        
         plan_key = request.plan_name.lower()
-        if plan_key not in prices:
+        if plan_key not in PLAN_PRICES:
             raise HTTPException(status_code=400, detail="Invalid plan name")
-            
+
         cycle = request.billing_cycle.lower()
-        if cycle not in ["monthly", "yearly"]:
+        if cycle not in ("monthly", "yearly"):
             raise HTTPException(status_code=400, detail="Invalid billing cycle")
-            
-        amount = prices[plan_key][cycle]
-        
-        # Shorten user_id to fit in 40 char receipt limit
-        short_id = request.user_id[:8] if len(request.user_id) > 8 else request.user_id
+
+        amount = PLAN_PRICES[plan_key][cycle]
+
+        # Shorten user_id to fit Razorpay's 40-char receipt limit
+        short_id = current_user_id[:8]
         receipt_id = f"rcpt_{short_id}_{int(datetime.now().timestamp())}"
-        
+
         order = payment_manager.create_order(
             amount=amount,
             currency="INR",
             receipt=receipt_id
         )
-        
+
         if not order:
             raise HTTPException(status_code=500, detail="Failed to create Razorpay order")
-            
+
+        logger.info(f"✅ Razorpay order created for user={current_user_id} plan={plan_key} cycle={cycle} amount={amount}")
+
         return {
             "status": "success",
             "order_id": order["id"],
@@ -618,23 +626,29 @@ async def create_razorpay_order(request: RazorpayOrderRequest):
             "currency": order["currency"],
             "key_id": os.environ.get("RAZORPAY_KEY_ID")
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in create_razorpay_order: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred")
 
 @app.post("/api/payments/razorpay/verify-payment")
-async def verify_razorpay_payment(request: RazorpayVerifyRequest):
+async def verify_razorpay_payment(
+    request: RazorpayVerifyRequest,
+    current_user_id: str = Depends(get_current_user)
+):
     """
-    Verify Razorpay payment signature and activate user subscription.
+    Verify Razorpay payment signature and activate user subscription (JWT-protected).
     Security flow:
       1. HMAC-SHA256 signature verification (prevents forged callbacks)
-      2. User existence guard
-      3. Idempotency guard via payment_transactions UNIQUE constraint
-      4. Immutable audit log written BEFORE subscription activation
-      5. Subscription columns updated on users table
+      2. Server-side order amount verification (prevents plan escalation attacks)
+      3. User existence guard (identity from JWT, not client body)
+      4. Idempotency guard via payment_transactions UNIQUE constraint
+      5. Immutable audit log written BEFORE subscription activation
+      6. Subscription activated exclusively for the JWT-authenticated user
     """
     try:
-        # ── 1. Cryptographic Signature Verification ──────────────────────────
+        # ── 1. Cryptographic Signature Verification ───────────────────────────
         is_valid = payment_manager.verify_signature(
             order_id=request.razorpay_order_id,
             payment_id=request.razorpay_payment_id,
@@ -644,23 +658,48 @@ async def verify_razorpay_payment(request: RazorpayVerifyRequest):
             logger.warning(f"❌ Invalid Razorpay signature for order {request.razorpay_order_id}")
             raise HTTPException(status_code=400, detail="Invalid payment signature")
 
-        # ── 2. User Guard ─────────────────────────────────────────────────────
-        user = get_user_by_id(request.user_id)
+        # ── 2. Server-Side Plan Price Verification (prevents plan escalation) ──
+        plan_key = request.plan_name.lower()
+        cycle = request.billing_cycle.lower()
+
+        if plan_key not in PLAN_PRICES:
+            raise HTTPException(status_code=400, detail="Invalid plan name")
+        if cycle not in ("monthly", "yearly"):
+            raise HTTPException(status_code=400, detail="Invalid billing cycle")
+
+        expected_amount = PLAN_PRICES[plan_key][cycle]
+
+        razorpay_order = payment_manager.fetch_order(request.razorpay_order_id)
+        if not razorpay_order:
+            raise HTTPException(status_code=502, detail="Could not verify order with payment provider")
+
+        actual_amount = int(razorpay_order.get("amount", 0))
+        actual_currency = razorpay_order.get("currency", "")
+
+        if actual_amount != expected_amount or actual_currency != "INR":
+            logger.warning(
+                f"🚨 Plan escalation attempt blocked! "
+                f"user={current_user_id} claimed plan={plan_key} (expected {expected_amount} paise) "
+                f"but order amount={actual_amount} currency={actual_currency}"
+            )
+            raise HTTPException(status_code=400, detail="Order amount does not match plan price")
+
+        # ── 3. User Guard (JWT identity — do NOT use client-supplied user_id) ──
+        user = get_user_by_id(current_user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
         user_email = user.get('email', '')
 
-        # ── 3 & 4. Idempotency + Audit Log ───────────────────────────────────
-        # Calculate subscription_end (needed for the audit row)
+        # ── 4 & 5. Idempotency + Audit Log ────────────────────────────────────
         from datetime import timezone
         now = datetime.now(timezone.utc)
-        days = 365 if request.billing_cycle.lower() == "yearly" else 30
+        days = 365 if cycle == "yearly" else 30
         subscription_end_iso = (now + timedelta(days=days)).isoformat()
 
         try:
             save_payment_transaction(
-                user_id=request.user_id,
+                user_id=current_user_id,
                 user_email=user_email,
                 razorpay_order_id=request.razorpay_order_id,
                 razorpay_payment_id=request.razorpay_payment_id,
@@ -670,17 +709,15 @@ async def verify_razorpay_payment(request: RazorpayVerifyRequest):
                 subscription_end=subscription_end_iso,
             )
         except Exception as audit_err:
-            # If the payment_id already exists it's a replay attack / accidental retry
             err_str = str(audit_err).lower()
             if 'unique' in err_str or 'duplicate' in err_str:
                 logger.warning(f"⚠️ Duplicate payment attempt blocked: {request.razorpay_payment_id}")
                 raise HTTPException(status_code=409, detail="This payment has already been processed")
-            # If the payment_transactions table doesn't exist yet, log a warning but proceed
             logger.warning(f"⚠️ Could not save payment_transaction (table may be missing): {audit_err}")
 
-        # ── 5. Activate Subscription ──────────────────────────────────────────
+        # ── 6. Activate Subscription for the authenticated user ───────────────
         activated = activate_user_subscription(
-            user_id=request.user_id,
+            user_id=current_user_id,
             plan_name=request.plan_name,
             billing_cycle=request.billing_cycle,
             razorpay_payment_id=request.razorpay_payment_id
@@ -688,7 +725,7 @@ async def verify_razorpay_payment(request: RazorpayVerifyRequest):
         if not activated:
             raise HTTPException(status_code=500, detail="Payment verified but subscription activation failed")
 
-        logger.info(f"✅ Subscription activated for user {request.user_id} — plan: {request.plan_name}")
+        logger.info(f"✅ Subscription activated for user={current_user_id} plan={plan_key} cycle={cycle}")
 
         return {
             "status": "success",
@@ -699,7 +736,7 @@ async def verify_razorpay_payment(request: RazorpayVerifyRequest):
         raise
     except Exception as e:
         logger.error(f"Error in verify_razorpay_payment: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred")
 
 
 @app.get("/api/payments/subscription-status")

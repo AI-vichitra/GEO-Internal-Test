@@ -1300,7 +1300,7 @@ def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
 def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
     try:
         response = supabase.table('users').select(
-            'id, email, created_at, subscription_plan, subscription_status, subscription_start, subscription_end, billing_cycle'
+            'id, email, role, is_suspended, credits_remaining, credits_total, created_at, subscription_plan, subscription_status, subscription_start, subscription_end, billing_cycle'
         ).eq('id', user_id).execute()
         return response.data[0] if response.data else None
     except Exception as e:
@@ -2083,3 +2083,245 @@ def record_daily_metrics(session_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error in record_daily_metrics for session {session_id}: {e}", exc_info=True)
         return {'error': str(e)}
+
+# ==============================================================================
+# ADMIN PANEL DATABASE HELPERS
+# ==============================================================================
+
+def admin_list_users(
+    search: Optional[str] = None,
+    plan: Optional[str] = None,
+    role: Optional[str] = None,
+    is_suspended: Optional[bool] = None,
+    page: int = 1,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List users with pagination, search, and filters (Admin only)."""
+    try:
+        query = supabase.table('users').select(
+            'id, email, role, is_suspended, subscription_plan, subscription_status, subscription_start, subscription_end, billing_cycle, credits_remaining, created_at',
+            count='exact'
+        )
+
+        if search:
+            query = query.ilike('email', f'%{search.strip()}%')
+        if plan:
+            query = query.eq('subscription_plan', plan.strip())
+        if role:
+            query = query.eq('role', role.strip())
+        if is_suspended is not None:
+            query = query.eq('is_suspended', is_suspended)
+
+        start = max(0, (page - 1) * limit)
+        end = start + limit - 1
+        response = query.order('created_at', desc=True).range(start, end).execute()
+
+        return {
+            "users": response.data or [],
+            "total": response.count or 0,
+            "page": page,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error(f"Error in admin_list_users: {e}", exc_info=True)
+        return {"users": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+
+
+def admin_get_user_detail(user_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve full details of a user for the admin portal."""
+    try:
+        user_res = supabase.table('users').select(
+            'id, email, role, is_suspended, credits_remaining, credits_total, created_at, updated_at, subscription_plan, subscription_status, subscription_start, subscription_end, billing_cycle, razorpay_payment_id'
+        ).eq('id', user_id).execute()
+
+        if not user_res.data:
+            return None
+
+        user = user_res.data[0]
+
+        # Fetch user's recent sessions count and project count
+        sessions_res = supabase.table('analysis_sessions').select('session_id', count='exact').eq('user_id', user_id).execute()
+        projects_res = supabase.table('projects').select('id', count='exact').eq('user_id', user_id).execute()
+        payments_res = supabase.table('payment_transactions').select('*').eq('user_id', user_id).order('created_at', desc=True).limit(5).execute()
+
+        user["total_sessions"] = sessions_res.count or 0
+        user["total_projects"] = projects_res.count or 0
+        user["recent_payments"] = payments_res.data or []
+
+        return user
+    except Exception as e:
+        logger.error(f"Error in admin_get_user_detail for {user_id}: {e}", exc_info=True)
+        return None
+
+
+def admin_update_user(user_id: str, fields: Dict[str, Any]) -> bool:
+    """Update user fields (e.g. role, is_suspended, plan, credits) via admin."""
+    try:
+        from datetime import datetime, timezone
+        fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        res = supabase.table('users').update(fields).eq('id', user_id).execute()
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"Error in admin_update_user for {user_id}: {e}", exc_info=True)
+        return False
+
+
+def admin_list_payments(
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List payment transactions with pagination and search."""
+    try:
+        query = supabase.table('payment_transactions').select('*', count='exact')
+
+        if search:
+            search_str = search.strip()
+            query = query.or_(f"user_email.ilike.%{search_str}%,razorpay_payment_id.ilike.%{search_str}%,razorpay_order_id.ilike.%{search_str}%")
+        if status:
+            query = query.eq('status', status.strip())
+
+        start = max(0, (page - 1) * limit)
+        end = start + limit - 1
+        response = query.order('created_at', desc=True).range(start, end).execute()
+
+        return {
+            "payments": response.data or [],
+            "total": response.count or 0,
+            "page": page,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error(f"Error in admin_list_payments: {e}", exc_info=True)
+        return {"payments": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+
+
+def admin_update_payment(payment_id: str, fields: Dict[str, Any]) -> bool:
+    """Update payment transaction fields (e.g. status='refunded', refund_id)."""
+    try:
+        res = supabase.table('payment_transactions').update(fields).eq('razorpay_payment_id', payment_id).execute()
+        return bool(res.data)
+    except Exception as e:
+        logger.error(f"Error in admin_update_payment for {payment_id}: {e}", exc_info=True)
+        return False
+
+
+def admin_get_stats() -> Dict[str, Any]:
+    """Calculate high-level KPIs for the Admin Overview dashboard."""
+    try:
+        total_users_res = supabase.table('users').select('id', count='exact').execute()
+        total_users = total_users_res.count or 0
+
+        paid_users_res = supabase.table('users').select('id', count='exact').eq('subscription_status', 'active').neq('subscription_plan', 'free').execute()
+        active_paid_users = paid_users_res.count or 0
+
+        suspended_res = supabase.table('users').select('id', count='exact').eq('is_suspended', True).execute()
+        suspended_users = suspended_res.count or 0
+
+        sessions_res = supabase.table('analysis_sessions').select('session_id', count='exact').execute()
+        total_sessions = sessions_res.count or 0
+
+        projects_res = supabase.table('projects').select('id', count='exact').execute()
+        total_projects = projects_res.count or 0
+
+        # Plan breakdown
+        users_by_plan: Dict[str, int] = {}
+        all_plans_res = supabase.table('users').select('subscription_plan').execute()
+        for r in (all_plans_res.data or []):
+            plan_name = (r.get('subscription_plan') or 'free').lower()
+            users_by_plan[plan_name] = users_by_plan.get(plan_name, 0) + 1
+
+        # Recent 5 audit logs
+        recent_audits = supabase.table('admin_audit_logs').select('*').order('created_at', desc=True).limit(5).execute()
+
+        # Total estimated LLM cost from usage_logs (if table exists)
+        total_cost = 0.0
+        try:
+            cost_res = supabase.table('usage_logs').select('est_cost_usd').execute()
+            total_cost = sum(float(row.get('est_cost_usd') or 0) for row in (cost_res.data or []))
+        except Exception:
+            pass
+
+        return {
+            "total_users": total_users,
+            "active_paid_users": active_paid_users,
+            "suspended_users": suspended_users,
+            "total_sessions": total_sessions,
+            "total_projects": total_projects,
+            "users_by_plan": users_by_plan,
+            "total_est_cost_usd": round(total_cost, 4),
+            "recent_audits": recent_audits.data or []
+        }
+    except Exception as e:
+        logger.error(f"Error in admin_get_stats: {e}", exc_info=True)
+        return {
+            "total_users": 0,
+            "active_paid_users": 0,
+            "suspended_users": 0,
+            "total_sessions": 0,
+            "total_projects": 0,
+            "users_by_plan": {},
+            "total_est_cost_usd": 0.0,
+            "recent_audits": [],
+            "error": str(e)
+        }
+
+
+def admin_list_audit_logs(
+    action: Optional[str] = None,
+    target_type: Optional[str] = None,
+    page: int = 1,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List admin audit logs with pagination and filters."""
+    try:
+        query = supabase.table('admin_audit_logs').select('*', count='exact')
+        if action:
+            query = query.eq('action', action.strip())
+        if target_type:
+            query = query.eq('target_type', target_type.strip())
+
+        start = max(0, (page - 1) * limit)
+        end = start + limit - 1
+        response = query.order('created_at', desc=True).range(start, end).execute()
+
+        return {
+            "logs": response.data or [],
+            "total": response.count or 0,
+            "page": page,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error(f"Error in admin_list_audit_logs: {e}", exc_info=True)
+        return {"logs": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+
+
+def admin_list_usage_logs(
+    user_id: Optional[str] = None,
+    activity_type: Optional[str] = None,
+    page: int = 1,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """List usage logs with pagination and filters."""
+    try:
+        query = supabase.table('usage_logs').select('*', count='exact')
+        if user_id:
+            query = query.eq('user_id', user_id.strip())
+        if activity_type:
+            query = query.eq('activity_type', activity_type.strip())
+
+        start = max(0, (page - 1) * limit)
+        end = start + limit - 1
+        response = query.order('created_at', desc=True).range(start, end).execute()
+
+        return {
+            "logs": response.data or [],
+            "total": response.count or 0,
+            "page": page,
+            "limit": limit
+        }
+    except Exception as e:
+        logger.error(f"Error in admin_list_usage_logs: {e}", exc_info=True)
+        return {"logs": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+

@@ -1,8 +1,9 @@
-import { LayoutDashboard, ListTodo, LogOut, Settings, Layout, Users, ChevronDown, ChevronRight, FileText } from "lucide-react";
+import { LayoutDashboard, ListTodo, LogOut, Settings, Layout, Users, ChevronDown, ChevronRight, FileText, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface SidebarProps {
   activeTab: 'overview' | 'prompts' | 'competitors' | 'citations' | 'llms-txt' | 'seo-analyzer';
@@ -17,6 +18,7 @@ export function Sidebar({ activeTab, onTabChange, onProjectsClick, onLogout, ema
   const [analyticsOpen, setAnalyticsOpen] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(true);
   const router = useRouter();
+  const { isAdmin } = useAuth();
 
   const navItems = [
     { key: 'overview' as const, label: 'Overview', icon: LayoutDashboard },
@@ -114,7 +116,16 @@ export function Sidebar({ activeTab, onTabChange, onProjectsClick, onLogout, ema
       </div>
 
       {/* Footer */}
-      <div className="p-2 border-t border-gray-200">
+      <div className="p-2 border-t border-gray-200 space-y-1">
+        {isAdmin && (
+          <button
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-all font-medium text-xs border border-indigo-200"
+            onClick={() => router.push("/admin")}
+          >
+            <Shield className="h-3.5 w-3.5 text-indigo-600 flex-shrink-0" />
+            <span className="truncate">Admin Panel</span>
+          </button>
+        )}
         <button className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-gray-500 hover:text-red-600 hover:bg-red-50 transition-all group" onClick={onLogout}>
           <div className="h-6 w-6 rounded-full bg-gray-100 flex items-center justify-center group-hover:bg-red-100 transition-colors">
             <LogOut className="h-3 w-3" />

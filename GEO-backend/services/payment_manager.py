@@ -81,6 +81,24 @@ class PaymentManager:
             return order
         except Exception as e:
             logger.error(f"Error fetching Razorpay order {order_id}: {str(e)}")
+    def refund_payment(self, payment_id: str, amount_paise: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """
+        Refund a payment via Razorpay API.
+        If amount_paise is None, full refund is issued.
+        """
+        if not self.client:
+            logger.error("Razorpay client not initialized")
+            return None
+
+        try:
+            data = {"payment_id": payment_id}
+            if amount_paise:
+                data["amount"] = amount_paise
+            refund = self.client.payment.refund(payment_id, data)
+            logger.info(f"Refund initiated for payment {payment_id}: {refund.get('id')}")
+            return refund
+        except Exception as e:
+            logger.error(f"Error issuing refund for payment {payment_id}: {str(e)}")
             return None
 
 # Global instance

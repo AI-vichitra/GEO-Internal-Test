@@ -28,10 +28,13 @@ interface AuthContextType {
   isAuthenticated: boolean;
   userId: string | null;
   email: string | null;
+  role: string | null;
+  isAdmin: boolean;
+  isSuperAdmin: boolean;
   token: string | null;
   subscription: SubscriptionStatus;
   isLoading: boolean;
-  login: (token: string, userId: string, email: string, subscription?: SubscriptionStatus) => void;
+  login: (token: string, userId: string, email: string, subscription?: SubscriptionStatus, role?: string) => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -46,9 +49,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionStatus>(DEFAULT_SUBSCRIPTION);
   const [isLoading, setIsLoading] = useState(true);
+
+  const isAdmin = role === "admin" || role === "super_admin";
+  const isSuperAdmin = role === "super_admin";
 
   // ── Internal helper: fetch both /api/auth/me AND /api/payments/subscription-status concurrently ──
   const fetchUserProfile = useCallback(async (storedToken: string) => {
@@ -60,6 +67,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       ]);
 
       if (!meRes.ok) throw new Error("Token invalid or expired");
+
+      const meData = await meRes.json();
+      if (meData?.user?.role) {
+        setRole(meData.user.role);
+        localStorage.setItem("userRole", meData.user.role);
+      }
 
       const subData = subRes.ok ? await subRes.json() : null;
       const subscriptionData: SubscriptionStatus =
@@ -78,14 +91,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const storedToken = localStorage.getItem("token");
     const storedUserId = localStorage.getItem("userId");
     const storedEmail = localStorage.getItem("userEmail");
+    const storedRole = localStorage.getItem("userRole");
 
     if (storedToken && storedUserId) {
       setToken(storedToken);
       setUserId(storedUserId);
       setEmail(storedEmail);
+      setRole(storedRole);
       setIsAuthenticated(true);
 
-      // Fetch latest subscription from the server (source of truth)
+      // Fetch latest subscription and user profile from the server (source of truth)
       fetchUserProfile(storedToken).finally(() => setIsLoading(false));
     } else {
       setIsLoading(false);
@@ -97,11 +112,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     newToken: string,
     newUserId: string,
     newEmail: string,
-    newSubscription: SubscriptionStatus = DEFAULT_SUBSCRIPTION
+    newSubscription: SubscriptionStatus = DEFAULT_SUBSCRIPTION,
+    newRole: string = "user"
   ) => {
     localStorage.setItem("token", newToken);
     localStorage.setItem("userId", newUserId);
     localStorage.setItem("userEmail", newEmail);
+    localStorage.setItem("userRole", newRole);
 
     try {
       document.cookie = `token=${newToken}; path=/`;
@@ -112,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(newToken);
     setUserId(newUserId);
     setEmail(newEmail);
+    setRole(newRole);
     setSubscription(newSubscription);
     setIsAuthenticated(true);
   };
@@ -121,6 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem("token");
     localStorage.removeItem("userId");
     localStorage.removeItem("userEmail");
+    localStorage.removeItem("userRole");
 
     try {
       document.cookie = `token=; Max-Age=0; path=/`;
@@ -129,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setUserId(null);
     setEmail(null);
+    setRole(null);
     setSubscription(DEFAULT_SUBSCRIPTION);
     setIsAuthenticated(false);
   };
@@ -146,6 +166,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated,
         userId,
         email,
+        role,
+        isAdmin,
+        isSuperAdmin,
         token,
         subscription,
         isLoading,

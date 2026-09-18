@@ -64,6 +64,11 @@ JWT_EXPIRATION_HOURS = 24
 # Log presence (not value) to help debug invalid tokens in different environments
 logger.info(f"JWT secret present: {bool(JWT_SECRET)}; length={len(JWT_SECRET) if JWT_SECRET else 0}")
 
+# Admin bootstrap configuration
+ADMIN_EMAILS = [e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()]
+if ADMIN_EMAILS:
+    logger.info(f"Admin bootstrap configured for {len(ADMIN_EMAILS)} email(s)")
+
 # ============= CANONICAL PLAN PRICING (server-side source of truth) =============
 # All amounts in paise (1 INR = 100 paise). Never trust client-supplied amounts.
 PLAN_PRICES = {
@@ -303,10 +308,11 @@ def verify_password(password: str, password_hash: str) -> bool:
     except Exception:
         return False
 
-def create_jwt_token(user_id: str) -> str:
-    """Create a JWT token for a user"""
+def create_jwt_token(user_id: str, role: str = "user") -> str:
+    """Create a JWT token for a user with embedded role"""
     payload = {
         'user_id': user_id,
+        'role': role,
         'exp': datetime.utcnow() + timedelta(hours=JWT_EXPIRATION_HOURS),
         'iat': datetime.utcnow()
     }
@@ -384,6 +390,13 @@ def get_current_user(authorization: Optional[str] = Header(None), token_cookie: 
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    # Real-time DB suspension check (defense in depth)
+    from services.database_manager import get_user_by_id
+    user_row = get_user_by_id(user_id)
+    if user_row and user_row.get("is_suspended"):
+        logger.warning(f"🚫 Suspended user {user_id} attempted access")
+        raise HTTPException(status_code=403, detail="Account is suspended. Please contact support.")
+
     return user_id
 
 def verify_session_owner(session_id: str, user_id: str) -> dict:
@@ -458,10 +471,22 @@ async def login(request: LoginRequest):
         # Verify password
         if not verify_password(request.password, user['password_hash']):
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        
-        # Create JWT token
-        token = create_jwt_token(user['id'])
-        
+
+        # Check real-time suspension on login
+        if user.get("is_suspended"):
+            raise HTTPException(status_code=403, detail="Account is suspended. Please contact support.")
+
+        # Check admin bootstrap
+        user_role = (user.get("role") or "user").lower()
+        if request.email.lower() in ADMIN_EMAILS and user_role != "super_admin":
+            from services.database_manager import admin_update_user
+            admin_update_user(user["id"], {"role": "super_admin"})
+            user_role = "super_admin"
+            logger.info(f"👑 Bootstrapped super_admin role for {request.email}")
+
+        # Create JWT token with role
+        token = create_jwt_token(user['id'], role=user_role)
+
         # Fetch subscription status to return alongside token
         sub_status = get_subscription_status(user['id'])
 
@@ -469,6 +494,7 @@ async def login(request: LoginRequest):
             "status": "success",
             "user_id": user['id'],
             "email": user['email'],
+            "role": user_role,
             "token": token,
             "subscription": sub_status,
             "message": "Login successful"
@@ -2741,6 +2767,9 @@ async def get_llms_txt_status(task_id: str, user_id: str = Depends(get_current_u
     
     return response
 
+# Mount Admin Router
+from services.admin_routes import router as admin_router
+app.include_router(admin_router)
 
 # ============= RUN SERVER =============
 if __name__ == "__main__":

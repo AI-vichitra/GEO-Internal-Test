@@ -194,31 +194,44 @@ app = FastAPI(
     description="Backend API for brand visibility analysis",
     version="1.0.0"
 )
-# ============= CORS MIDDLEWARE =============
+# ============= CORS MIDDLEWARE (SEC-003) =============
 origins = [
+    # Production
     "http://geocc.duckdns.org",
     "https://geocc.duckdns.org",
     "http://geocc.duckdns.org:3000",
     "http://geocc.duckdns.org:8000",
-    "https://optimiseurbrand.tech",
-    "http://optimiseurbrand.tech",
-    "https://www.optimiseurbrand.tech",
-    "http://www.optimiseurbrand.tech",
-    "localhost:3000",
+    # Staging
+    "http://geotest2026.duckdns.org",
+    "https://geotest2026.duckdns.org",
+    "http://geotest2026.duckdns.org:3000",
+    "http://geotest2026.duckdns.org:8000",
+    # Local Development
     "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    # VM Direct IPs (Staging & Production VM fallbacks)
+    "http://34.44.17.192",
+    "http://34.44.17.192:3000",
+    "http://34.44.17.192:8000",
     "http://34.42.234.69",
     "http://34.42.234.69:3000",
-    "http://34.42.234.69:5173",
     "http://34.42.234.69:8000",
-    "http://34.42.234.69:80",
-    os.environ.get("FRONTEND_URL", "http://geocc.duckdns.org")
 ]
+
+# Allow overriding or adding origins via FRONTEND_URL environment variable
+frontend_env = os.environ.get("FRONTEND_URL")
+if frontend_env:
+    for url in [u.strip() for u in frontend_env.split(",") if u.strip()]:
+        if url not in origins:
+            origins.append(url)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 

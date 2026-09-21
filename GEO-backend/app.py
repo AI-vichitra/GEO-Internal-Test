@@ -57,12 +57,20 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# JWT Configuration
-JWT_SECRET = os.environ.get("JWT_SECRET", "your-secret-key-change-in-production")
+# JWT Configuration (SEC-002)
+_JWT_SECRET_RAW = os.environ.get("JWT_SECRET", "")
+_INSECURE_DEFAULTS = {"your-secret-key-change-in-production", "secret", ""}
+if not _JWT_SECRET_RAW or _JWT_SECRET_RAW in _INSECURE_DEFAULTS or len(_JWT_SECRET_RAW) < 32:
+    raise RuntimeError(
+        "[SEC-002] JWT_SECRET is missing, too short, or still set to an insecure default. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+        "and set it in your .env file."
+    )
+JWT_SECRET = _JWT_SECRET_RAW
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 # Log presence (not value) to help debug invalid tokens in different environments
-logger.info(f"JWT secret present: {bool(JWT_SECRET)}; length={len(JWT_SECRET) if JWT_SECRET else 0}")
+logger.info(f"JWT secret present: True; length={len(JWT_SECRET)}")
 
 # Admin bootstrap configuration
 ADMIN_EMAILS = [e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()]

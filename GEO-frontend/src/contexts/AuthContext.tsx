@@ -15,13 +15,25 @@ interface SubscriptionStatus {
   billing_cycle: string | null;
 }
 
+interface PlanLimits {
+  max_projects: number;
+  max_competitors: number;
+  max_prompts_per_project: number;
+}
+
 const DEFAULT_SUBSCRIPTION: SubscriptionStatus = {
-  is_active: false,
-  subscription_plan: null,
-  subscription_status: null,
+  is_active: true,
+  subscription_plan: "free",
+  subscription_status: "active",
   subscription_start: null,
   subscription_end: null,
   billing_cycle: null,
+};
+
+const DEFAULT_PLAN_LIMITS: PlanLimits = {
+  max_projects: 1,
+  max_competitors: 10,
+  max_prompts_per_project: 5,
 };
 
 interface AuthContextType {
@@ -33,8 +45,9 @@ interface AuthContextType {
   isSuperAdmin: boolean;
   token: string | null;
   subscription: SubscriptionStatus;
+  planLimits: PlanLimits;
   isLoading: boolean;
-  login: (token: string, userId: string, email: string, subscription?: SubscriptionStatus, role?: string) => void;
+  login: (token: string, userId: string, email: string, subscription?: SubscriptionStatus, role?: string, planLimits?: PlanLimits) => void;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -52,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [role, setRole] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [subscription, setSubscription] = useState<SubscriptionStatus>(DEFAULT_SUBSCRIPTION);
+  const [planLimits, setPlanLimits] = useState<PlanLimits>(DEFAULT_PLAN_LIMITS);
   const [isLoading, setIsLoading] = useState(true);
 
   const isAdmin = role === "admin" || role === "super_admin";
@@ -77,12 +91,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const subData = subRes.ok ? await subRes.json() : null;
       const subscriptionData: SubscriptionStatus =
         subData?.subscription ?? DEFAULT_SUBSCRIPTION;
+      const limitsData: PlanLimits =
+        subData?.plan_limits ?? DEFAULT_PLAN_LIMITS;
 
       setSubscription(subscriptionData);
+      setPlanLimits(limitsData);
     } catch (err) {
       console.error("Auth profile fetch failed:", err);
       // Don't force logout here — token may still be valid for other purposes
       setSubscription(DEFAULT_SUBSCRIPTION);
+      setPlanLimits(DEFAULT_PLAN_LIMITS);
     }
   }, []);
 
@@ -107,13 +125,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchUserProfile]);
 
+  // ── Refresh plan limits every 2 minutes while authenticated ──────────────
+  // This ensures admin CMS changes propagate without requiring logout.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const storedToken = localStorage.getItem("token");
+    if (!storedToken) return;
+
+    const interval = setInterval(() => {
+      fetch(`${API_BASE_URL}/api/payments/subscription-status`, {
+        headers: { Authorization: `Bearer ${storedToken}` },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.plan_limits) setPlanLimits(data.plan_limits);
+          if (data?.subscription) setSubscription(data.subscription);
+        })
+        .catch(() => {/* silent — user still logged in */});
+    }, 2 * 60 * 1000); // every 2 minutes
+
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
   // ── login: called right after successful auth response ────────────────────
   const login = (
     newToken: string,
     newUserId: string,
     newEmail: string,
     newSubscription: SubscriptionStatus = DEFAULT_SUBSCRIPTION,
-    newRole: string = "user"
+    newRole: string = "user",
+    newPlanLimits?: PlanLimits
   ) => {
     localStorage.setItem("token", newToken);
     localStorage.setItem("userId", newUserId);
@@ -131,7 +172,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEmail(newEmail);
     setRole(newRole);
     setSubscription(newSubscription);
+    if (newPlanLimits) {
+      setPlanLimits(newPlanLimits);
+    }
     setIsAuthenticated(true);
+    // Background fetch to ensure full sync with latest DB state
+    fetchUserProfile(newToken);
   };
 
   // ── logout ────────────────────────────────────────────────────────────────
@@ -150,6 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setEmail(null);
     setRole(null);
     setSubscription(DEFAULT_SUBSCRIPTION);
+    setPlanLimits(DEFAULT_PLAN_LIMITS);
     setIsAuthenticated(false);
   };
 
@@ -171,6 +218,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isSuperAdmin,
         token,
         subscription,
+        planLimits,
         isLoading,
         login,
         logout,

@@ -26,9 +26,11 @@ export default function DashboardLayout({
             return;
         }
 
-        // ── Gate 2: Must have an active subscription ──────────────────────
-        // Only enforce once subscription check is done (is_active = false by default while loading)
-        if (!subscription.is_active) {
+        // ── Gate 2: Must have an active subscription or free plan ─────────
+        // Free plan users always have workspace access under free plan limits.
+        const plan = subscription.subscription_plan?.toLowerCase();
+        const hasAccess = subscription.is_active || plan === "free";
+        if (!hasAccess) {
             redirectingRef.current = true;
             router.push("/pricing");
             return;
@@ -38,7 +40,7 @@ export default function DashboardLayout({
     // Reset the redirect guard whenever auth state changes legitimately
     useEffect(() => {
         redirectingRef.current = false;
-    }, [isAuthenticated, subscription.is_active]);
+    }, [isAuthenticated, subscription.is_active, subscription.subscription_plan]);
 
     // ── Loading spinner while auth + subscription resolves ────────────────
     if (isLoading) {
@@ -51,7 +53,9 @@ export default function DashboardLayout({
     }
 
     // Don't flash children while redirect is in progress
-    if (!isAuthenticated || !subscription.is_active) return null;
+    const plan = subscription.subscription_plan?.toLowerCase();
+    const hasAccess = subscription.is_active || plan === "free";
+    if (!isAuthenticated || !hasAccess) return null;
 
     return (
         <div className="min-h-screen bg-transparent">

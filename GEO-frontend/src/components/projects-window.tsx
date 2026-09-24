@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Layout, Calendar, Globe, Briefcase, ChevronRight, Search, Trash2, CalendarClock, Clock } from "lucide-react";
+import Link from "next/link";
+import { Plus, Layout, Calendar, Globe, Briefcase, ChevronRight, Search, Trash2, CalendarClock, Clock, Layers } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import {
     AlertDialog,
@@ -52,16 +53,10 @@ interface ProjectsWindowProps {
     onCreateProject: () => void;
 }
 
-const FRONTEND_PLAN_LIMITS: Record<string, { max_projects: number }> = {
-    "free": { max_projects: 1 },
-    "lite plan": { max_projects: 3 },
-    "growth plan": { max_projects: 5 },
-    "custom plan": { max_projects: 10 },
-    "pro plan": { max_projects: 10 },
-};
+
 
 export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWindowProps) {
-    const { subscription } = useAuth();
+    const { subscription, planLimits } = useAuth();
     const [projects, setProjects] = useState<Project[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
@@ -74,9 +69,8 @@ export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWin
         saved: boolean;
     }>>({});
 
-    const planName = subscription.subscription_plan?.toLowerCase() || "free";
-    const limits = FRONTEND_PLAN_LIMITS[planName] || FRONTEND_PLAN_LIMITS["free"];
-    const isLimitReached = projects.length >= limits.max_projects;
+    const planName = subscription.subscription_plan?.toUpperCase() || "FREE";
+    const isLimitReached = projects.length >= planLimits.max_projects;
 
     useEffect(() => {
         fetchProjects();
@@ -184,20 +178,49 @@ export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWin
 
     return (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
                     <h1 className="text-3xl font-bold tracking-tight text-gray-900">Brand Projects</h1>
                     <p className="text-gray-500 mt-1">Manage and monitor your brand visibility across all your projects.</p>
                 </div>
-                <div className="flex items-center gap-3">
-                    {isLimitReached && (
-                        <div className="hidden md:flex flex-col items-end mr-2">
-                            <Badge variant="outline" className="text-amber-600 border-amber-200 bg-amber-50 rounded-md py-0.5">
-                                {planName.toUpperCase()} Limit: {projects.length}/{limits.max_projects} used
-                            </Badge>
-                            <p className="text-[10px] text-gray-400 mt-1">Upgrade to add more</p>
+                <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                    {/* Plan & Project Limits Tracker Element */}
+                    <div className="flex items-center gap-3 px-3.5 py-2 rounded-xl bg-white border border-gray-200/90 shadow-sm text-xs">
+                        <div className="flex items-center gap-2">
+                            <span className="flex h-2 w-2 relative">
+                                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isLimitReached ? "bg-amber-400" : "bg-teal-400"}`}></span>
+                                <span className={`relative inline-flex rounded-full h-2 w-2 ${isLimitReached ? "bg-amber-500" : "bg-teal-500"}`}></span>
+                            </span>
+                            <span className="font-semibold text-gray-900 capitalize tracking-wide">
+                                {planName.toLowerCase()} Plan
+                            </span>
                         </div>
-                    )}
+                        <div className="h-3.5 w-px bg-gray-200" />
+                        <div className="flex items-center gap-1.5">
+                            <span className="text-gray-500">Projects:</span>
+                            <span className={`font-bold ${isLimitReached ? "text-amber-600" : "text-gray-900"}`}>
+                                {projects.length}
+                            </span>
+                            <span className="text-gray-400">/</span>
+                            <span className="text-gray-600 font-medium">{planLimits.max_projects}</span>
+                        </div>
+                        {/* Mini progress meter */}
+                        <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden hidden sm:block">
+                            <div 
+                                className={`h-full rounded-full transition-all duration-300 ${isLimitReached ? "bg-amber-500" : "bg-teal-500"}`}
+                                style={{ width: `${Math.min(100, Math.round((projects.length / Math.max(1, planLimits.max_projects)) * 100))}%` }}
+                            />
+                        </div>
+                        {isLimitReached && (
+                            <Link 
+                                href="/pricing" 
+                                className="ml-0.5 text-[11px] font-semibold text-teal-600 hover:text-teal-700 underline underline-offset-2 transition-colors"
+                            >
+                                Upgrade
+                            </Link>
+                        )}
+                    </div>
+
                     <Button
                         onClick={onCreateProject}
                         className={`shadow-md transition-all ${isLimitReached ? "bg-gray-200 text-gray-400 cursor-not-allowed hover:bg-gray-200" : "bg-teal-500 text-white hover:bg-teal-600 hover:scale-105"}`}

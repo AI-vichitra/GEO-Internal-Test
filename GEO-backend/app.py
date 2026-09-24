@@ -1,8 +1,8 @@
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Query, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, Header, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPBasicCredentials
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import logging
 import json
@@ -37,7 +37,8 @@ from services.database_manager import (
     signup_user, get_user_by_email, get_user_by_id, get_user_sessions,
     update_session_status, get_session_status, get_session_metadata, duplicate_session_cohorts,
     duplicate_session_competitors, replace_session_competitors, clear_session_metrics,
-    activate_user_subscription, save_payment_transaction, get_subscription_status
+    activate_user_subscription, save_payment_transaction, get_subscription_status,
+    get_all_plans, get_plan_by_name, canonicalize_plan_name
 )
 from services.database_manager import (
     get_all_unique_brands,
@@ -115,6 +116,51 @@ PLAN_LIMITS = {
     "custom": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10},
     "pro": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10}
 }
+
+# ============= DYNAMIC PLANS CMS RESOLVERS (with fallback) =============
+USE_DB_PLANS = os.getenv("USE_DB_PLANS", "true").lower() == "true"
+
+
+def get_plan_price_paise(plan_name: str, cycle: str) -> Optional[int]:
+    """
+    Returns the price in paise for a plan and billing cycle.
+    Tries DB/cache first when USE_DB_PLANS is enabled, falling back to PLAN_PRICES.
+    """
+    cycle_key = cycle.lower()
+    if USE_DB_PLANS:
+        try:
+            db_plan = get_plan_by_name(plan_name)
+            if db_plan:
+                if cycle_key == "yearly":
+                    return int(db_plan.get("yearly_price_paise", 0))
+                return int(db_plan.get("monthly_price_paise", 0))
+        except Exception as e:
+            logger.warning(f"Failed to fetch plan price from DB: {e}")
+
+    # Fallback to hardcoded dict
+    canon = canonicalize_plan_name(plan_name)
+    if canon in PLAN_PRICES and cycle_key in PLAN_PRICES[canon]:
+        return PLAN_PRICES[canon][cycle_key]
+    return None
+
+
+def get_plan_limits_dynamic(plan_name: str) -> Dict[str, Any]:
+    """
+    Returns limits for a plan.
+    Tries DB/cache first when USE_DB_PLANS is enabled, falling back to PLAN_LIMITS.
+    """
+    canon = canonicalize_plan_name(plan_name)
+    if USE_DB_PLANS:
+        try:
+            db_plan = get_plan_by_name(canon)
+            if db_plan and db_plan.get("limits"):
+                return db_plan["limits"]
+        except Exception as e:
+            logger.warning(f"Failed to fetch plan limits from DB: {e}")
+
+    # Fallback to hardcoded dict
+    return PLAN_LIMITS.get(canon, PLAN_LIMITS["free"])
+
 
 
 
@@ -463,11 +509,19 @@ async def signup(request: SignUpRequest):
         # Create JWT token
         token = create_jwt_token(user_id)
         
+        # Fetch subscription status and plan limits to return alongside token
+        sub_status = get_subscription_status(user_id)
+        plan_name = sub_status.get("subscription_plan") or "free"
+        plan_limits = get_plan_limits_dynamic(plan_name)
+
         return {
             "status": "success",
             "user_id": user_id,
             "email": request.email,
+            "role": "user",
             "token": token,
+            "subscription": sub_status,
+            "plan_limits": plan_limits,
             "message": "User registered successfully"
         }
     
@@ -508,8 +562,10 @@ async def login(request: LoginRequest):
         # Create JWT token with role
         token = create_jwt_token(user['id'], role=user_role)
 
-        # Fetch subscription status to return alongside token
+        # Fetch subscription status and plan limits to return alongside token
         sub_status = get_subscription_status(user['id'])
+        plan_name = sub_status.get("subscription_plan") or "free"
+        plan_limits = get_plan_limits_dynamic(plan_name)
 
         return {
             "status": "success",
@@ -518,6 +574,7 @@ async def login(request: LoginRequest):
             "role": user_role,
             "token": token,
             "subscription": sub_status,
+            "plan_limits": plan_limits,
             "message": "Login successful"
         }
     
@@ -565,20 +622,26 @@ async def google_auth(request: GoogleAuthRequest):
             if not user_id:
                 raise HTTPException(status_code=500, detail="Failed to create user during Google sign-in")
                 
-            user = {"id": user_id, "email": email}
+            user = {"id": user_id, "email": email, "role": "user"}
         
-        # Create JWT token
-        token = create_jwt_token(user['id'])
+        user_role = (user.get("role") or "user").lower()
 
-        # Fetch subscription status to return alongside token
+        # Create JWT token
+        token = create_jwt_token(user['id'], role=user_role)
+
+        # Fetch subscription status and plan limits to return alongside token
         sub_status = get_subscription_status(user['id'])
+        plan_name = sub_status.get("subscription_plan") or "free"
+        plan_limits = get_plan_limits_dynamic(plan_name)
 
         return {
             "status": "success",
             "user_id": user['id'],
             "email": user['email'],
+            "role": user_role,
             "token": token,
             "subscription": sub_status,
+            "plan_limits": plan_limits,
             "message": "Google Login successful"
         }
         
@@ -632,6 +695,60 @@ async def get_current_user_info_alias(request: Request):
     except Exception:
         return JSONResponse(status_code=200, content={"status": "not_logged_in", "user": None})
 
+# ============= PUBLIC PRICING PLANS ENDPOINT =============
+
+@app.get("/api/plans")
+async def get_public_plans(response: Response):
+    """
+    Public pricing plans endpoint (unauthenticated).
+    Returns all active plans sorted by sort_order.
+    Cached for 60 seconds at browser and edge CDN layer.
+    """
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=30"
+    if USE_DB_PLANS:
+        try:
+            db_plans = get_all_plans(active_only=True)
+            if db_plans:
+                return {"plans": db_plans}
+        except Exception as e:
+            logger.warning(f"Error fetching public plans from DB: {e}")
+
+    # Fallback to hardcoded plan definitions if DB is unavailable
+    fallback_plans = [
+        {
+            "name": "free", "display_name": "Free", "description": "Get started with essential AI visibility metrics.",
+            "badge_text": None, "monthly_price_paise": 0, "yearly_price_paise": 0, "currency": "INR",
+            "features": ["1 Brand Project", "Up to 5 Prompts/queries per project", "Up to 10 Competitors tracked", "AI Engine Rankings (Claude, Mistral, Google AIO)", "Basic sentiment & engine presence", "Community support"],
+            "limits": {"max_projects": 1, "max_prompts_per_project": 5, "max_competitors": 10}, "is_active": True, "is_popular": False, "cta_text": "Start Free", "sort_order": 0
+        },
+        {
+            "name": "lite", "display_name": "Lite", "description": "Essential AI search monitoring for emerging brands.",
+            "badge_text": None, "monthly_price_paise": 240000, "yearly_price_paise": 2400000, "currency": "INR",
+            "features": ["10 Brand Projects", "Up to 30 Prompts/queries per project", "Up to 10 Competitors tracked", "AI Engine Rankings (Claude, Mistral, Google AIO)", "AI Recommendations Engine", "Standard email support"],
+            "limits": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10}, "is_active": True, "is_popular": False, "cta_text": "Upgrade to Lite", "sort_order": 1
+        },
+        {
+            "name": "growth", "display_name": "Growth", "description": "Complete GEO toolset for growing brands & marketing teams.",
+            "badge_text": "MOST POPULAR", "monthly_price_paise": 650000, "yearly_price_paise": 6500000, "currency": "INR",
+            "features": ["10 Brand Projects", "Up to 30 Prompts/queries per project", "Up to 10 Competitors tracked", "All AI Engine Rankings + Deeper analysis", "AI Recommendations Engine", "Full Competitor Analysis & overlap matrix", "Priority email & chat support"],
+            "limits": {"max_projects": 10, "max_prompts_per_project": 30, "max_competitors": 10}, "is_active": True, "is_popular": True, "cta_text": "Upgrade to Growth", "sort_order": 2
+        },
+        {
+            "name": "pro", "display_name": "Pro", "description": "Maximum scale, deep analytics and tailored support for agencies.",
+            "badge_text": None, "monthly_price_paise": 1150000, "yearly_price_paise": 11500000, "currency": "INR",
+            "features": ["20 Brand Projects", "Up to 50 Prompts/queries per project", "Up to 10 Competitors tracked", "All AI Engines with highest sampling frequency", "Advanced Competitor Benchmark & gap analysis", "Automated scheduled tracking runs", "Dedicated account manager"],
+            "limits": {"max_projects": 20, "max_prompts_per_project": 50, "max_competitors": 10}, "is_active": True, "is_popular": False, "cta_text": "Upgrade to Pro", "sort_order": 3
+        },
+        {
+            "name": "enterprise", "display_name": "Enterprise", "description": "Custom deployment, dedicated infrastructure, and unlimited scale.",
+            "badge_text": None, "monthly_price_paise": 3700000, "yearly_price_paise": 37000000, "currency": "INR",
+            "features": ["100 Brand Projects", "Up to 100 Prompts/queries per project", "Up to 10 Competitors tracked", "Custom AI models integration", "SLA guarantee (99.9% uptime)", "Custom reporting & webhook alerts", "24/7 Priority Support"],
+            "limits": {"max_projects": 100, "max_prompts_per_project": 100, "max_competitors": 10}, "is_active": True, "is_popular": False, "cta_text": "Contact Sales", "sort_order": 4
+        }
+    ]
+    return {"plans": fallback_plans}
+
+
 # ============= PAYMENT ENDPOINTS (RAZORPAY) =============
 
 @app.post("/api/payments/razorpay/create-order")
@@ -641,15 +758,17 @@ async def create_razorpay_order(
 ):
     """Create a new Razorpay order for a specific plan (JWT-protected)"""
     try:
-        plan_key = request.plan_name.lower()
-        if plan_key not in PLAN_PRICES:
-            raise HTTPException(status_code=400, detail="Invalid plan name")
+        plan_key = canonicalize_plan_name(request.plan_name)
+        if plan_key == "free":
+            raise HTTPException(status_code=400, detail="Free plan cannot be purchased via payment checkout")
 
         cycle = request.billing_cycle.lower()
         if cycle not in ("monthly", "yearly"):
             raise HTTPException(status_code=400, detail="Invalid billing cycle")
 
-        amount = PLAN_PRICES[plan_key][cycle]
+        amount = get_plan_price_paise(plan_key, cycle)
+        if amount is None or amount <= 0:
+            raise HTTPException(status_code=400, detail="Invalid plan name or price is zero")
 
         # Shorten user_id to fit Razorpay's 40-char receipt limit
         short_id = current_user_id[:8]
@@ -691,7 +810,7 @@ async def verify_razorpay_payment(
       2. Server-side order amount verification (prevents plan escalation attacks)
       3. User existence guard (identity from JWT, not client body)
       4. Idempotency guard via payment_transactions UNIQUE constraint
-      5. Immutable audit log written BEFORE subscription activation
+      5. Immutable audit log written BEFORE subscription activation with actual amount snapshot
       6. Subscription activated exclusively for the JWT-authenticated user
     """
     try:
@@ -706,15 +825,15 @@ async def verify_razorpay_payment(
             raise HTTPException(status_code=400, detail="Invalid payment signature")
 
         # ── 2. Server-Side Plan Price Verification (prevents plan escalation) ──
-        plan_key = request.plan_name.lower()
+        plan_key = canonicalize_plan_name(request.plan_name)
         cycle = request.billing_cycle.lower()
 
-        if plan_key not in PLAN_PRICES:
-            raise HTTPException(status_code=400, detail="Invalid plan name")
         if cycle not in ("monthly", "yearly"):
             raise HTTPException(status_code=400, detail="Invalid billing cycle")
 
-        expected_amount = PLAN_PRICES[plan_key][cycle]
+        expected_amount = get_plan_price_paise(plan_key, cycle)
+        if expected_amount is None:
+            raise HTTPException(status_code=400, detail="Invalid plan name")
 
         razorpay_order = payment_manager.fetch_order(request.razorpay_order_id)
         if not razorpay_order:
@@ -751,9 +870,11 @@ async def verify_razorpay_payment(
                 razorpay_order_id=request.razorpay_order_id,
                 razorpay_payment_id=request.razorpay_payment_id,
                 razorpay_signature=request.razorpay_signature,
-                plan_name=request.plan_name,
+                plan_name=plan_key,
                 billing_cycle=request.billing_cycle,
                 subscription_end=subscription_end_iso,
+                amount_paise=actual_amount,
+                currency=actual_currency
             )
         except Exception as audit_err:
             err_str = str(audit_err).lower()
@@ -790,11 +911,14 @@ async def verify_razorpay_payment(
 async def check_subscription_status(user_id: str = Depends(get_current_user)):
     """
     JWT-protected endpoint. Returns the current subscription status for the
-    logged-in user. Used by the frontend to gate dashboard access.
+    logged-in user, plus the DB-driven plan limits so the frontend never
+    needs a hardcoded lookup table.
     """
     try:
         status = get_subscription_status(user_id)
-        return {"status": "success", "subscription": status}
+        plan_name = status.get("subscription_plan") or "free"
+        plan_limits = get_plan_limits_dynamic(plan_name)
+        return {"status": "success", "subscription": status, "plan_limits": plan_limits}
     except Exception as e:
         logger.error(f"Error fetching subscription status: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch subscription status")
@@ -905,7 +1029,7 @@ async def run_analysis(request: AnalysisRequest, background_tasks: BackgroundTas
         sub_status = get_subscription_status(user_id)
         raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
         plan_name = raw_plan.lower() if raw_plan else "free"
-        limits = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["free"])
+        limits = get_plan_limits_dynamic(raw_plan)
 
         # If project_id is missing, this is a new brand/project analysis
         if not request.project_id:
@@ -1280,7 +1404,7 @@ async def create_new_project(request: ProjectCreateRequest, user_id: str = Depen
             raw_plan = sub_status.get("subscription_plan", "free")
             plan_name = raw_plan.lower() if raw_plan else "free"
             
-        limits = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["free"])
+        limits = get_plan_limits_dynamic(plan_name)
         
         # Check existing project count
         existing_projects = get_user_projects(user_id)
@@ -1567,7 +1691,7 @@ async def execute_selected_prompts(
         sub_status = get_subscription_status(session_user_id) if session_user_id else None
         raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
         plan_name = raw_plan.lower() if raw_plan else "free"
-        limits = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["free"])
+        limits = get_plan_limits_dynamic(raw_plan)
         max_prompts = limits.get("max_prompts_per_project", 5)
 
         # Extract request data
@@ -1745,7 +1869,7 @@ async def validate_selection(
         sub_status = get_subscription_status(session_user_id) if session_user_id else None
         raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
         plan_name = raw_plan.lower() if raw_plan else "free"
-        limits = PLAN_LIMITS.get(plan_name, PLAN_LIMITS["free"])
+        limits = get_plan_limits_dynamic(raw_plan)
         max_prompts = limits.get("max_prompts_per_project", 5)
 
         selected_cohorts_data = request.get("selected_cohorts", [])
@@ -2582,7 +2706,10 @@ async def update_competitors_and_recalculate(
     user_id: str = Depends(get_current_user)
 ):
     try:
-        max_competitors = 10
+        sub_status = get_subscription_status(user_id) if user_id else None
+        raw_plan = sub_status.get("subscription_plan", "free") if sub_status else "free"
+        limits = get_plan_limits_dynamic(raw_plan)
+        max_competitors = limits.get("max_competitors", 10)
         new_competitors = list(set([c.strip() for c in request.competitors if c.strip()]))
         
         if len(new_competitors) > max_competitors:

@@ -89,7 +89,7 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
           : "Logged in successfully.",
       });
 
-      login(data.token, data.user_id, data.email, data.subscription);
+      login(data.token, data.user_id, data.email, data.subscription, data.role, data.plan_limits);
       onSuccess(data.token, data.user_id);
     } catch (err: any) {
       setError(err.message || "An error occurred during authentication");
@@ -138,7 +138,7 @@ export function SignupPage({ onSuccess }: SignupPageProps) {
         description: "Logged in with Google successfully.",
       });
 
-      login(data.token, data.user_id, data.email, data.subscription);
+      login(data.token, data.user_id, data.email, data.subscription, data.role, data.plan_limits);
       onSuccess(data.token, data.user_id);
     } catch (err: any) {
       setError(err.message || "Google authentication failed");

@@ -2,7 +2,7 @@ import os
 import json
 import traceback
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import logging
 from urllib.parse import urlparse
@@ -17,11 +17,14 @@ logger = logging.getLogger(__name__)
 
 # Initialize Supabase client
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be set in environment variables")
+
+if SUPABASE_KEY.startswith("sb_publish_") or "anon" in SUPABASE_KEY[:20].lower():
+    logger.warning("⚠️ SUPABASE_KEY appears to be a publishable/anon key. If Row Level Security (RLS) is enabled, backend operations will be subject to RLS restrictions. Use the service_role key for full backend access.")
+
 
 # ✅ FIX: Disable HTTP/2 to resolve [WinError 10035] WSAEWOULDBLOCK on Windows + Python 3.14
 # The default Supabase client uses httpx with HTTP/2 which has non-blocking socket issues on Windows.
@@ -1272,6 +1275,8 @@ def signup_user(email: str, password_hash: str) -> Optional[str]:
         data = {
             'email': email,
             'password_hash': password_hash,
+            'subscription_plan': 'free',
+            'subscription_status': 'active',
             'created_at': datetime.now().isoformat(),
             'updated_at': datetime.now().isoformat()
         }
@@ -1280,7 +1285,7 @@ def signup_user(email: str, password_hash: str) -> Optional[str]:
         user_id = response.data[0]['id'] if response.data else None
         
         if user_id:
-            logger.info(f"✅ User registered: {email}")
+            logger.info(f"✅ User registered: {email} on free plan")
         
         return user_id
     except Exception as e:
@@ -1344,11 +1349,14 @@ def save_payment_transaction(
     razorpay_signature: str,
     plan_name: str,
     billing_cycle: str,
-    subscription_end: str
+    subscription_end: str,
+    amount_paise: int = 0,
+    currency: str = "INR"
 ) -> bool:
     """
     Saves an immutable audit record to the payment_transactions table.
     This provides idempotency: if razorpay_payment_id already exists (UNIQUE), the insert will fail.
+    Snapshots the actual charged amount (in paise) and currency for audit and reconciliation.
     """
     try:
         supabase.table('payment_transactions').insert({
@@ -1361,8 +1369,10 @@ def save_payment_transaction(
             'billing_cycle': billing_cycle,
             'status': 'verified',
             'subscription_end': subscription_end,
+            'amount_paise': amount_paise,
+            'currency': currency,
         }).execute()
-        logger.info(f"✅ Payment transaction saved for user {user_id}, payment {razorpay_payment_id}")
+        logger.info(f"✅ Payment transaction saved for user {user_id}, payment {razorpay_payment_id}, amount={amount_paise} {currency}")
         return True
     except Exception as e:
         logger.error(f"❌ Error saving payment transaction: {str(e)}")
@@ -1373,7 +1383,8 @@ def save_payment_transaction(
 def get_subscription_status(user_id: str) -> Dict[str, Any]:
     """
     Returns the subscription status for a user.
-    `is_active` is True only when subscription_status == 'active' AND subscription_end is in the future.
+    Free plan is active by default without requiring an expiration date.
+    Paid plans require subscription_status == 'active' AND subscription_end in the future.
     """
     try:
         from datetime import timezone
@@ -1382,14 +1393,21 @@ def get_subscription_status(user_id: str) -> Dict[str, Any]:
         ).eq('id', user_id).execute()
 
         if not response.data:
-            return {"is_active": False, "subscription_plan": None, "subscription_end": None}
+            return {"is_active": True, "subscription_plan": "free", "subscription_status": "active", "subscription_end": None}
 
         user = response.data[0]
-        status = user.get('subscription_status', 'inactive')
+        raw_plan = user.get('subscription_plan')
+        plan = (raw_plan or 'free').lower().strip()
+        status = user.get('subscription_status') or ('active' if plan == 'free' else 'inactive')
         sub_end_str = user.get('subscription_end')
 
         is_active = False
-        if status == 'active' and sub_end_str:
+        if plan == 'free':
+            # Free tier users are always active unless explicitly marked inactive or cancelled
+            is_active = (status not in ('cancelled', 'suspended', 'inactive'))
+            if is_active:
+                status = 'active'
+        elif status == 'active' and sub_end_str:
             try:
                 # Handle both offset-aware and naive ISO strings
                 sub_end = datetime.fromisoformat(sub_end_str.replace('Z', '+00:00'))
@@ -1401,7 +1419,7 @@ def get_subscription_status(user_id: str) -> Dict[str, Any]:
 
         return {
             "is_active": is_active,
-            "subscription_plan": user.get('subscription_plan'),
+            "subscription_plan": plan,
             "subscription_status": status,
             "subscription_start": user.get('subscription_start'),
             "subscription_end": sub_end_str,
@@ -2324,4 +2342,194 @@ def admin_list_usage_logs(
     except Exception as e:
         logger.error(f"Error in admin_list_usage_logs: {e}", exc_info=True)
         return {"logs": [], "total": 0, "page": page, "limit": limit, "error": str(e)}
+
+
+# ─── PLANS CMS & PRICING ENGINE ───────────────────────────────────────────────
+import time
+
+# Lightweight in-memory TTL cache (60s staleness window)
+_PLANS_CACHE: Dict[str, Any] = {
+    "data": None,
+    "timestamp": 0.0,
+    "ttl": 60.0
+}
+
+
+def invalidate_plans_cache():
+    """Invalidates the in-memory plans cache immediately upon CMS writes."""
+    _PLANS_CACHE["timestamp"] = 0.0
+    _PLANS_CACHE["data"] = None
+
+
+def alert_db_fallback(context: str, error: Any):
+    """Critical alert when backend is forced to fall back to hardcoded plan dicts."""
+    logger.critical(f"🚨 [CRITICAL_DB_FALLBACK] {context}: Database failed ({error}). Reverting to hardcoded plan constants.")
+    alert_webhook = os.getenv("ALERT_WEBHOOK_URL")
+    if alert_webhook:
+        try:
+            import urllib.request
+            import json
+            req = urllib.request.Request(
+                alert_webhook,
+                data=json.dumps({"text": f"🚨 [CRITICAL_DB_FALLBACK] {context}: {error}"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=3)
+        except Exception as alert_ex:
+            logger.error(f"Failed to deliver fallback alert to webhook: {alert_ex}")
+
+
+def canonicalize_plan_name(name: Optional[str]) -> str:
+    """Normalizes any incoming plan identifier to the canonical single-word plan name."""
+    if not name:
+        return "free"
+    cleaned = name.lower().strip()
+    if cleaned in ("lite plan", "lite", "starter"):
+        return "lite"
+    if cleaned in ("growth plan", "growth"):
+        return "growth"
+    if cleaned in ("pro plan", "pro", "professional"):
+        return "pro"
+    if cleaned in ("enterprise", "custom", "custom plan"):
+        return "enterprise"
+    if cleaned in ("free", "basic"):
+        return "free"
+    return cleaned
+
+
+def get_all_plans(active_only: bool = False) -> List[Dict[str, Any]]:
+    """
+    Returns plans sorted by sort_order.
+    Caches active plans for 60 seconds to relieve database load.
+    """
+    now = time.monotonic()
+    if active_only and _PLANS_CACHE["data"] and (now - _PLANS_CACHE["timestamp"] < _PLANS_CACHE["ttl"]):
+        return _PLANS_CACHE["data"]
+
+    try:
+        query = supabase.table('plans').select('*').order('sort_order', desc=False)
+        if active_only:
+            query = query.eq('is_active', True)
+        res = query.execute()
+        plans = res.data or []
+
+        if active_only and plans:
+            _PLANS_CACHE["data"] = plans
+            _PLANS_CACHE["timestamp"] = now
+
+        return plans
+    except Exception as e:
+        alert_db_fallback("get_all_plans", e)
+        return []
+
+
+def get_plan_by_name(name: str) -> Optional[Dict[str, Any]]:
+    """Fetches a single plan by its canonical name. Respects the 60s TTL cache."""
+    canon = canonicalize_plan_name(name)
+    # Check cache first — only serve if within TTL
+    now = time.monotonic()
+    cached = _PLANS_CACHE.get("data")
+    if cached and (now - _PLANS_CACHE["timestamp"] < _PLANS_CACHE["ttl"]):
+        for p in cached:
+            if p.get("name") == canon:
+                return p
+
+    try:
+        res = supabase.table('plans').select('*').eq('name', canon).limit(1).execute()
+        if res.data and len(res.data) > 0:
+            return res.data[0]
+        return None
+    except Exception as e:
+        alert_db_fallback(f"get_plan_by_name({canon})", e)
+        return None
+
+
+def get_plan_by_id(plan_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches a single plan by its UUID."""
+    try:
+        res = supabase.table('plans').select('*').eq('id', plan_id).limit(1).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error(f"Error in get_plan_by_id: {e}")
+        return None
+
+
+def create_plan(plan_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Creates a new plan in the database with version 1."""
+    try:
+        plan_data["name"] = canonicalize_plan_name(plan_data.get("name"))
+        plan_data["version"] = 1
+        plan_data["currency"] = plan_data.get("currency", "INR")
+        res = supabase.table('plans').insert(plan_data).execute()
+        invalidate_plans_cache()
+        if not res.data:
+            raise Exception("Failed to insert plan into Supabase")
+        return res.data[0]
+    except Exception as e:
+        logger.error(f"Error in create_plan: {e}")
+        raise
+
+
+def update_plan(
+    plan_id: str,
+    fields: Dict[str, Any],
+    expected_version: Optional[int] = None,
+    admin_user_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Updates an existing plan with optimistic locking and price version auditing.
+    Raises HTTPException(409) if version conflict occurs.
+    """
+    current = get_plan_by_id(plan_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    current_version = current.get("version", 1)
+    if expected_version is not None and current_version != expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Conflict: Plan was modified by another administrator (expected v{expected_version}, current v{current_version}). Please refresh."
+        )
+
+    # Calculate field diff
+    diff = {}
+    for k, v in fields.items():
+        if k in current and current[k] != v:
+            diff[k] = {"old": current[k], "new": v}
+
+    # Price history audit: if price changed, record historical snapshot
+    monthly_changed = "monthly_price_paise" in fields and fields["monthly_price_paise"] != current.get("monthly_price_paise")
+    yearly_changed = "yearly_price_paise" in fields and fields["yearly_price_paise"] != current.get("yearly_price_paise")
+    if monthly_changed or yearly_changed:
+        try:
+            supabase.table('plan_price_history').insert({
+                "plan_id": plan_id,
+                "monthly_price_paise": fields.get("monthly_price_paise", current.get("monthly_price_paise", 0)),
+                "yearly_price_paise": fields.get("yearly_price_paise", current.get("yearly_price_paise", 0)),
+                "currency": fields.get("currency", current.get("currency", "INR")),
+                "changed_by": admin_user_id,
+                "change_reason": fields.get("change_reason", "CMS price update")
+            }).execute()
+        except Exception as hist_err:
+            logger.warning(f"Could not record plan_price_history: {hist_err}")
+
+    # Increment version and update
+    fields["version"] = current_version + 1
+    fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Don't persist change_reason on plans table
+    fields.pop("change_reason", None)
+
+    try:
+        res = supabase.table('plans').update(fields).eq('id', plan_id).eq('version', current_version).execute()
+        if not res.data:
+            raise HTTPException(status_code=409, detail="Conflict: Plan was updated concurrently. Please refresh.")
+
+        invalidate_plans_cache()
+        return {"updated_plan": res.data[0], "diff": diff, "old_plan": current}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in update_plan: {e}")
+        raise
+
 

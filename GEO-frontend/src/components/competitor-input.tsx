@@ -9,14 +9,15 @@ interface CompetitorInputProps {
   competitors: string[];
   onChange: (competitors: string[]) => void;
   disabled?: boolean;
+  maxCompetitors?: number;
 }
 
-export function CompetitorInput({ competitors, onChange, disabled = false }: CompetitorInputProps) {
+export function CompetitorInput({ competitors, onChange, disabled = false, maxCompetitors = 10 }: CompetitorInputProps) {
   const [inputValue, setInputValue] = useState("");
 
   const handleAddCompetitor = () => {
     const trimmed = inputValue.trim();
-    if (trimmed && !competitors.includes(trimmed) && competitors.length < 10) {
+    if (trimmed && !competitors.includes(trimmed) && competitors.length < maxCompetitors) {
       onChange([...competitors, trimmed]);
       setInputValue("");
     }
@@ -37,10 +38,10 @@ export function CompetitorInput({ competitors, onChange, disabled = false }: Com
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <Label className="text-xs font-semibold text-gray-700">
-          Competitors <span className="font-normal text-gray-400">(optional, max 10)</span>
+          Competitors <span className="font-normal text-gray-400">(optional, max {maxCompetitors})</span>
         </Label>
         <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
-          {competitors.length}/10
+          {competitors.length}/{maxCompetitors}
         </Badge>
       </div>
 
@@ -50,13 +51,13 @@ export function CompetitorInput({ competitors, onChange, disabled = false }: Com
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyPress={handleKeyPress}
-          disabled={disabled || competitors.length >= 10}
+          disabled={disabled || competitors.length >= maxCompetitors}
           className="flex-1 h-9 text-sm"
         />
         <Button
           type="button"
           onClick={handleAddCompetitor}
-          disabled={!inputValue.trim() || competitors.length >= 10 || disabled}
+          disabled={!inputValue.trim() || competitors.length >= maxCompetitors || disabled}
           size="sm"
           variant="outline"
           className="h-9 px-3"

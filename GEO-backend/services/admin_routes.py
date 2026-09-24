@@ -13,10 +13,17 @@ from services.database_manager import (
     admin_update_payment,
     admin_get_stats,
     admin_list_audit_logs,
-    admin_list_usage_logs
+    admin_list_usage_logs,
+    get_all_plans,
+    get_plan_by_id,
+    create_plan,
+    update_plan,
+    canonicalize_plan_name,
+    supabase
 )
 from services.audit import log_admin_action
 from services.payment_manager import payment_manager
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -373,3 +380,147 @@ async def list_usage_logs_endpoint(
 ):
     """Retrieve user activity and LLM usage logs."""
     return admin_list_usage_logs(user_id=user_id, activity_type=activity_type, page=page, limit=limit)
+
+
+# ─── PLANS CMS SCHEMAS & ENDPOINTS ──────────────────────────────────────────
+
+class PlanLimitsSchema(BaseModel):
+    max_projects: int = Field(..., ge=1)
+    max_prompts_per_project: int = Field(..., ge=1)
+    max_competitors: int = Field(..., ge=1)
+
+
+class AdminPlanCreateRequest(BaseModel):
+    name: str = Field(..., pattern=r"^[a-z0-9_-]+$", min_length=2, max_length=50)
+    display_name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+    badge_text: Optional[str] = None
+    monthly_price_paise: int = Field(..., ge=0)
+    yearly_price_paise: int = Field(..., ge=0)
+    currency: str = "INR"
+    features: List[str] = Field(default_factory=list)
+    limits: PlanLimitsSchema
+    is_active: bool = True
+    is_popular: bool = False
+    cta_text: str = "Get Started"
+    sort_order: int = 0
+    grandfather_existing_subscribers: bool = False
+
+
+class AdminPlanUpdateRequest(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    badge_text: Optional[str] = None
+    monthly_price_paise: Optional[int] = Field(None, ge=0)
+    yearly_price_paise: Optional[int] = Field(None, ge=0)
+    currency: Optional[str] = None
+    features: Optional[List[str]] = None
+    limits: Optional[PlanLimitsSchema] = None
+    is_active: Optional[bool] = None
+    is_popular: Optional[bool] = None
+    cta_text: Optional[str] = None
+    sort_order: Optional[int] = None
+    grandfather_existing_subscribers: Optional[bool] = None
+    expected_version: int = Field(..., description="Required for optimistic locking")
+    change_reason: Optional[str] = None
+
+
+@router.get("/plans")
+async def list_admin_plans_endpoint(admin: Dict[str, Any] = Depends(require_admin)):
+    """
+    List all plans (active & inactive) with current subscriber counts.
+    """
+    plans = get_all_plans(active_only=False)
+    
+    # Calculate subscriber count per plan
+    subscriber_counts: Dict[str, int] = {}
+    try:
+        users_res = supabase.table('users').select('subscription_plan').execute()
+        for u in (users_res.data or []):
+            plan_name = canonicalize_plan_name(u.get('subscription_plan'))
+            subscriber_counts[plan_name] = subscriber_counts.get(plan_name, 0) + 1
+    except Exception as count_err:
+        logger.warning(f"Could not compute plan subscriber counts: {count_err}")
+
+    for p in plans:
+        canon = p.get('name', '')
+        p['subscriber_count'] = subscriber_counts.get(canon, 0)
+
+    return {"plans": plans}
+
+
+@router.get("/plans/{plan_id}")
+async def get_admin_plan_endpoint(plan_id: str, admin: Dict[str, Any] = Depends(require_admin)):
+    """Retrieve details of a single plan."""
+    plan = get_plan_by_id(plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    return {"plan": plan}
+
+
+@router.post("/plans")
+async def create_admin_plan_endpoint(
+    request_body: AdminPlanCreateRequest,
+    req: Request,
+    admin: Dict[str, Any] = Depends(require_super_admin)
+):
+    """
+    Create a new plan. Restricted exclusively to super_admin.
+    """
+    plan_dict = request_body.model_dump()
+    if isinstance(plan_dict.get("limits"), BaseModel):
+        plan_dict["limits"] = plan_dict["limits"].model_dump()
+
+    try:
+        new_plan = create_plan(plan_dict)
+        log_admin_action(
+            admin_user_id=admin.get("user_id"),
+            action="create_plan",
+            target_type="plan",
+            target_id=str(new_plan.get("id")),
+            details={"plan_name": new_plan.get("name"), "monthly_price_paise": new_plan.get("monthly_price_paise")},
+            ip_address=get_client_ip(req)
+        )
+        return {"success": True, "plan": new_plan}
+    except Exception as e:
+        logger.error(f"Error creating plan: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to create plan: {str(e)}")
+
+
+@router.put("/plans/{plan_id}")
+async def update_admin_plan_endpoint(
+    plan_id: str,
+    request_body: AdminPlanUpdateRequest,
+    req: Request,
+    admin: Dict[str, Any] = Depends(require_super_admin)
+):
+    """
+    Update plan with optimistic locking. Restricted exclusively to super_admin.
+    """
+    update_data = {k: v for k, v in request_body.model_dump().items() if v is not None}
+    expected_version = update_data.pop("expected_version")
+    if "limits" in update_data and isinstance(update_data["limits"], BaseModel):
+        update_data["limits"] = update_data["limits"].model_dump()
+
+    result = update_plan(
+        plan_id=plan_id,
+        fields=update_data,
+        expected_version=expected_version,
+        admin_user_id=admin.get("user_id")
+    )
+
+    log_admin_action(
+        admin_user_id=admin.get("user_id"),
+        action="update_plan",
+        target_type="plan",
+        target_id=plan_id,
+        details={
+            "plan_name": result["updated_plan"].get("name"),
+            "old_version": expected_version,
+            "new_version": result["updated_plan"].get("version"),
+            "diff": result.get("diff", {})
+        },
+        ip_address=get_client_ip(req)
+    )
+
+    return {"success": True, "plan": result["updated_plan"], "diff": result.get("diff", {})}

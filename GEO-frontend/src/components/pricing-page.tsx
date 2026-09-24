@@ -27,56 +27,107 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
 
   // ── Removed Auto-skip: allowing users to view pricing even if subscribed ──
 
-  const plans = [
+  const FALLBACK_PLANS = [
     {
-      name: "Lite Plan",
-      description: "Perfect for Individuals",
-      monthlyPrice: 39,
-      yearlyPrice: 390,
+      name: "Lite",
+      canonicalName: "lite",
+      description: "Essential AI search monitoring for emerging brands.",
+      monthlyPrice: 2400,
+      yearlyPrice: 24000,
+      currency: "INR",
       badge: "Most Affordable",
       features: [
-        { text: "3 Projects", included: true },
-        { text: "10 Prompts Tracked (UI BASED)", included: true },
-        { text: "48 Hour Refresh", included: true },
-        { text: "Detailed Citation Data", included: true },
-        { text: "Competitor Monitoring Included", included: true }
+        { text: "10 Brand Projects", included: true },
+        { text: "Up to 30 Prompts/queries per project", included: true },
+        { text: "Up to 10 Competitors tracked", included: true },
+        { text: "AI Engine Rankings (Claude, Mistral, Google AIO)", included: true },
+        { text: "AI Recommendations Engine", included: true },
+        { text: "Standard email support", included: true }
       ],
-      cta: "Start 7-day trial",
+      cta: "Upgrade to Lite",
       popular: false
     },
     {
-      name: "Growth Plan",
-      description: "Ideal for Advanced Users",
-      monthlyPrice: 89,
-      yearlyPrice: 890,
+      name: "Growth",
+      canonicalName: "growth",
+      description: "Complete GEO toolset for growing brands & marketing teams.",
+      monthlyPrice: 6500,
+      yearlyPrice: 65000,
+      currency: "INR",
       badge: "Most Popular",
       features: [
-        { text: "5 Projects", included: true },
-        { text: "25 Prompts Tracked (UI BASED)", included: true },
-        { text: "Daily Refresh", included: true },
-        { text: "Detailed Citation Data", included: true },
-        { text: "Competitor Monitoring Included", included: true }
+        { text: "10 Brand Projects", included: true },
+        { text: "Up to 30 Prompts/queries per project", included: true },
+        { text: "Up to 10 Competitors tracked", included: true },
+        { text: "All AI Engine Rankings + Deeper analysis", included: true },
+        { text: "AI Recommendations Engine", included: true },
+        { text: "Full Competitor Analysis & overlap matrix", included: true },
+        { text: "Priority email & chat support", included: true }
       ],
-      cta: "Start 7-day trial",
+      cta: "Upgrade to Growth",
       popular: true
     },
     {
-      name: "Pro Plan",
-      description: "Built for Small Teams",
-      monthlyPrice: 149,
-      yearlyPrice: 1490,
+      name: "Pro",
+      canonicalName: "pro",
+      description: "Maximum scale, deep analytics and tailored support for agencies.",
+      monthlyPrice: 11500,
+      yearlyPrice: 115000,
+      currency: "INR",
       badge: "Best Value",
       features: [
-        { text: "10 Projects", included: true },
-        { text: "50 Prompts Tracked (UI BASED)", included: true },
-        { text: "Daily Refresh", included: true },
-        { text: "Detailed Citation Data", included: true },
-        { text: "Competitor Monitoring Included", included: true }
+        { text: "20 Brand Projects", included: true },
+        { text: "Up to 50 Prompts/queries per project", included: true },
+        { text: "Up to 10 Competitors tracked", included: true },
+        { text: "All AI Engines with highest sampling frequency", included: true },
+        { text: "Advanced Competitor Benchmark & gap analysis", included: true },
+        { text: "Automated scheduled tracking runs", included: true },
+        { text: "Dedicated account manager", included: true }
       ],
-      cta: "Start 7-day trial",
+      cta: "Upgrade to Pro",
       popular: false
     }
   ];
+
+  const [plans, setPlans] = useState(FALLBACK_PLANS);
+  const [plansLoading, setPlansLoading] = useState(true);
+
+  React.useEffect(() => {
+    async function loadDynamicPlans() {
+      try {
+        const res = await fetch(`${API_URL}/api/plans`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.plans && data.plans.length > 0) {
+            const activePlans = data.plans
+              .filter((p: any) => p.is_active && p.name !== "free")
+              .map((p: any) => ({
+                name: p.display_name || p.name,
+                canonicalName: p.name,
+                description: p.description || "",
+                monthlyPrice: Math.round((p.monthly_price_paise || 0) / 100),
+                yearlyPrice: Math.round((p.yearly_price_paise || 0) / 100),
+                currency: p.currency || "INR",
+                badge: p.badge_text || (p.is_popular ? "MOST POPULAR" : null),
+                features: (p.features || []).map((feat: any) =>
+                  typeof feat === "string" ? { text: feat, included: true } : feat
+                ),
+                cta: p.cta_text || "Upgrade Now",
+                popular: p.is_popular || false,
+              }));
+            if (activePlans.length > 0) {
+              setPlans(activePlans);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Could not load dynamic plans, using fallback defaults:", err);
+      } finally {
+        setPlansLoading(false);
+      }
+    }
+    loadDynamicPlans();
+  }, []);
 
   const faqData: FAQItem[] = [
     { q: "What is Radarkit and how does it work?", a: "Radarkit is a Generative Engine Optimization (GEO) and AI search tracking tool that monitors how your brand appears across various AI assistants and provides actionable insights to improve visibility and performance." },
@@ -275,20 +326,25 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
                   {plan.badge}
                 </div>
                 <div className="flex items-baseline gap-1">
-                  <span className="text-4xl font-bold">${billingCycle === 'monthly' ? plan.monthlyPrice : plan.yearlyPrice / 10}.00</span>
+                  <span className="text-4xl font-bold">
+                    {plan.currency === "USD" ? "$" : "₹"}
+                    {billingCycle === 'monthly'
+                      ? plan.monthlyPrice.toLocaleString("en-IN")
+                      : Math.round(plan.yearlyPrice / 12).toLocaleString("en-IN")}
+                  </span>
                   <span className="text-gray-400 font-medium">/ Month</span>
                 </div>
               </div>
 
               <Button
-                onClick={() => handleCheckout(plan.name)}
-                disabled={subscription?.is_active && subscription?.subscription_plan?.toLowerCase() === plan.name.toLowerCase()}
-                className={`w-full py-6 rounded-2xl text-base font-bold transition-all mb-4 ${subscription?.is_active && subscription?.subscription_plan?.toLowerCase() === plan.name.toLowerCase()
+                onClick={() => handleCheckout(plan.canonicalName || plan.name)}
+                disabled={subscription?.is_active && (subscription?.subscription_plan?.toLowerCase() === (plan.canonicalName || plan.name).toLowerCase())}
+                className={`w-full py-6 rounded-2xl text-base font-bold transition-all mb-4 ${subscription?.is_active && (subscription?.subscription_plan?.toLowerCase() === (plan.canonicalName || plan.name).toLowerCase())
                   ? 'bg-emerald-50 text-emerald-600 border border-emerald-100'
                   : 'bg-black text-white hover:bg-gray-800'
                   }`}
               >
-                {subscription?.is_active && subscription?.subscription_plan?.toLowerCase() === plan.name.toLowerCase() ? "Current Plan" : plan.cta}
+                {subscription?.is_active && (subscription?.subscription_plan?.toLowerCase() === (plan.canonicalName || plan.name).toLowerCase()) ? "Current Plan" : plan.cta}
               </Button>
               <p className="text-center text-[11px] text-gray-400 font-medium mb-10 flex items-center justify-center gap-1.5">
                 <Check className="h-3 w-3" /> Cancel Your Subscription Anytime

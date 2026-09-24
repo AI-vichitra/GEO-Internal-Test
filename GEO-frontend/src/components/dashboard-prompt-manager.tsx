@@ -28,13 +28,7 @@ import { useToast } from "@/hooks/use-toast";
 
 import { useAuth } from "@/contexts/AuthContext";
 
-const FRONTEND_PROMPT_LIMITS: Record<string, { max_prompts_per_project: number }> = {
-  "free": { max_prompts_per_project: 2 },
-  "lite plan": { max_prompts_per_project: 10 },
-  "growth plan": { max_prompts_per_project: 25 },
-  "custom plan": { max_prompts_per_project: 50 },
-  "pro plan": { max_prompts_per_project: 50 },
-};
+
 
 const ALL_LLMS = [
   { id: "Perplexity", name: "Perplexity" },
@@ -61,17 +55,16 @@ export function DashboardPromptManager({
   cohorts: initialCohorts
 }: DashboardPromptManagerProps) {
   const { toast } = useToast();
-  const { subscription } = useAuth();
+  const { subscription, planLimits } = useAuth();
 
   const planName = subscription.subscription_plan?.toLowerCase() || "free";
-  const limits = FRONTEND_PROMPT_LIMITS[planName] || FRONTEND_PROMPT_LIMITS["free"];
 
-  const MAX_SELECTION = limits.max_prompts_per_project;
+  const MAX_SELECTION = planLimits.max_prompts_per_project;
 
   const getAvailableLLMs = () => {
-    if (planName === "pro plan" || planName === "custom plan") return ALL_LLMS;
-    if (planName === "growth plan") return ALL_LLMS.filter(l => l.id !== "Claude");
-    return ALL_LLMS.filter(l => l.id !== "ChatGPT" && l.id !== "Claude"); // Lite Plan & free
+    if (planName === "pro" || planName === "custom" || planName === "enterprise") return ALL_LLMS;
+    if (planName === "growth") return ALL_LLMS.filter(l => l.id !== "Claude");
+    return ALL_LLMS.filter(l => l.id !== "ChatGPT" && l.id !== "Claude"); // Lite & free
   };
   const AVAILABLE_LLMS = getAvailableLLMs();
 

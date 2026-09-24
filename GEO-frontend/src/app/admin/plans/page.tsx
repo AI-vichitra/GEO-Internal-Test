@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { adminApi } from "@/lib/admin-api";
-import { Layers, Sparkles, CheckCircle2, UserPlus, RefreshCw, AlertCircle } from "lucide-react";
+import { Layers, Sparkles, CheckCircle2, UserPlus, RefreshCw, AlertCircle, Settings } from "lucide-react";
 
 export default function AdminPlansPage() {
   const [stats, setStats] = useState<any>(null);
@@ -82,11 +82,20 @@ export default function AdminPlansPage() {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-white">Plans & Subscriptions</h1>
-        <p className="text-sm text-slate-400">
-          Monitor tier distributions, grant promotional access, or manually provision enterprise agreements.
-        </p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-white">Plans & Subscriptions</h1>
+          <p className="text-sm text-slate-400">
+            Monitor tier distributions, grant promotional access, or manually provision enterprise agreements.
+          </p>
+        </div>
+        <Link
+          href="/admin/plans/cms"
+          className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition-all hover:bg-indigo-500 active:scale-95"
+        >
+          <Settings className="h-4 w-4" />
+          Manage Plans CMS
+        </Link>
       </div>
 
       {/* Plan Cards */}

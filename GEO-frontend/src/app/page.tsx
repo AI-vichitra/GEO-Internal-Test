@@ -14,8 +14,9 @@ export default function Home() {
 
   const handleGetStarted = () => {
     if (isAuthenticated) {
-      // Paid users go directly to their workspace; unpaid go to pricing.
-      router.push(subscription.is_active ? "/dashboard" : "/pricing");
+      const plan = subscription.subscription_plan?.toLowerCase();
+      const hasAccess = subscription.is_active || plan === "free";
+      router.push(hasAccess ? "/dashboard" : "/pricing");
     } else {
       router.push("/login");
     }

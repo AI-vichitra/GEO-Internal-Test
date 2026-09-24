@@ -16,6 +16,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { apiRequest } from "@/lib/queryClient";
 import { analysisRequestSchema, type AnalysisRequest } from "@shared/schema";
 import { Loader2, ArrowRight, Globe, Sparkles, CheckCircle2, Search, Lock } from "lucide-react";
@@ -26,6 +27,7 @@ interface AnalysisFormProps {
 
 export function AnalysisForm({ onAnalysisStart }: AnalysisFormProps) {
   const { toast } = useToast();
+  const { planLimits } = useAuth();
   const [currentStep, setCurrentStep] = useState(1);
   const [brandLocked, setBrandLocked] = useState(false);
   const [suggestedCompetitors, setSuggestedCompetitors] = useState<string[]>([]);
@@ -267,6 +269,7 @@ export function AnalysisForm({ onAnalysisStart }: AnalysisFormProps) {
                           competitors={field.value || []}
                           onChange={field.onChange}
                           disabled={false}
+                          maxCompetitors={planLimits.max_competitors}
                         />
                       </FormControl>
                       <FormMessage />

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Progress } from "@/components/ui/progress";
 import { Card } from "@/components/ui/card";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -21,11 +22,14 @@ export function AnalysisProgress({ sessionId, onComplete, onPromptSelectionReady
 
     const pollStatus = async () => {
       try {
-        const token = localStorage.getItem("token");
+        const token = getAuthToken();
         const headers: Record<string, string> = {};
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        const response = await fetch(`${API_BASE_URL}/api/analysis/status/${sessionId}`, { headers });
+        const response = await fetch(`${API_BASE_URL}/api/analysis/status/${sessionId}`, {
+          headers,
+          credentials: "include"
+        });
         
         // ✅ FIXED: Graceful error handling instead of throw
         if (!response.ok) {

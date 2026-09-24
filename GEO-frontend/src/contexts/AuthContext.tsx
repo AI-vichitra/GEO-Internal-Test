@@ -2,6 +2,10 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from "react";
 
+import { setAuthToken, getAuthToken } from "@/lib/queryClient";
+
+export { getAuthToken };
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -72,20 +76,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isSuperAdmin = role === "super_admin";
 
   // ── Internal helper: fetch both /api/auth/me AND /api/payments/subscription-status concurrently ──
-  const fetchUserProfile = useCallback(async (storedToken: string) => {
+  const fetchUserProfile = useCallback(async (tokenOverride?: string) => {
     try {
-      const headers = { Authorization: `Bearer ${storedToken}` };
+      const activeToken = tokenOverride || getAuthToken();
+      const headers: Record<string, string> = activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
       const [meRes, subRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/auth/me`, { headers }),
-        fetch(`${API_BASE_URL}/api/payments/subscription-status`, { headers }),
+        fetch(`${API_BASE_URL}/api/auth/me`, { headers, credentials: "include" }),
+        fetch(`${API_BASE_URL}/api/payments/subscription-status`, { headers, credentials: "include" }),
       ]);
 
-      if (!meRes.ok) throw new Error("Token invalid or expired");
+      if (!meRes.ok) throw new Error("Session invalid or expired");
 
       const meData = await meRes.json();
-      if (meData?.user?.role) {
-        setRole(meData.user.role);
-        localStorage.setItem("userRole", meData.user.role);
+      if (meData?.token) {
+        setToken(meData.token);
+        setAuthToken(meData.token);
+      }
+      if (meData?.user) {
+        setUserId(meData.user.id);
+        setEmail(meData.user.email);
+        setRole(meData.user.role || "user");
+        setIsAuthenticated(true);
       }
 
       const subData = subRes.ok ? await subRes.json() : null;
@@ -97,44 +108,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSubscription(subscriptionData);
       setPlanLimits(limitsData);
     } catch (err) {
-      console.error("Auth profile fetch failed:", err);
-      // Don't force logout here — token may still be valid for other purposes
+      // Clear in-memory token on auth failure
+      setToken(null);
+      setAuthToken(null);
+      setUserId(null);
+      setEmail(null);
+      setRole(null);
+      setIsAuthenticated(false);
       setSubscription(DEFAULT_SUBSCRIPTION);
       setPlanLimits(DEFAULT_PLAN_LIMITS);
     }
   }, []);
 
-  // ── Load auth state from localStorage on mount ────────────────────────────
+  // ── Restore session on mount via HttpOnly cookie (or in-memory token) ────────────
   useEffect(() => {
-    const storedToken = localStorage.getItem("token");
-    const storedUserId = localStorage.getItem("userId");
-    const storedEmail = localStorage.getItem("userEmail");
-    const storedRole = localStorage.getItem("userRole");
-
-    if (storedToken && storedUserId) {
-      setToken(storedToken);
-      setUserId(storedUserId);
-      setEmail(storedEmail);
-      setRole(storedRole);
-      setIsAuthenticated(true);
-
-      // Fetch latest subscription and user profile from the server (source of truth)
-      fetchUserProfile(storedToken).finally(() => setIsLoading(false));
-    } else {
-      setIsLoading(false);
-    }
+    fetchUserProfile().finally(() => setIsLoading(false));
   }, [fetchUserProfile]);
 
   // ── Refresh plan limits every 2 minutes while authenticated ──────────────
   // This ensures admin CMS changes propagate without requiring logout.
   useEffect(() => {
     if (!isAuthenticated) return;
-    const storedToken = localStorage.getItem("token");
-    if (!storedToken) return;
 
     const interval = setInterval(() => {
+      const activeToken = getAuthToken();
+      const headers: Record<string, string> = activeToken ? { Authorization: `Bearer ${activeToken}` } : {};
       fetch(`${API_BASE_URL}/api/payments/subscription-status`, {
-        headers: { Authorization: `Bearer ${storedToken}` },
+        headers,
+        credentials: "include",
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((data) => {
@@ -156,18 +157,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     newRole: string = "user",
     newPlanLimits?: PlanLimits
   ) => {
-    localStorage.setItem("token", newToken);
-    localStorage.setItem("userId", newUserId);
-    localStorage.setItem("userEmail", newEmail);
-    localStorage.setItem("userRole", newRole);
-
-    try {
-      document.cookie = `token=${newToken}; path=/`;
-    } catch (e) {
-      // ignore in non-browser environments
-    }
-
     setToken(newToken);
+    setAuthToken(newToken);
     setUserId(newUserId);
     setEmail(newEmail);
     setRole(newRole);
@@ -180,18 +171,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetchUserProfile(newToken);
   };
 
-  // ── logout ────────────────────────────────────────────────────────────────
+  // ── logout: calls backend to clear HttpOnly cookie and clears memory ───────
   const logout = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("userId");
-    localStorage.removeItem("userEmail");
-    localStorage.removeItem("userRole");
-
-    try {
-      document.cookie = `token=; Max-Age=0; path=/`;
-    } catch (e) { }
+    fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    }).catch(() => {});
 
     setToken(null);
+    setAuthToken(null);
     setUserId(null);
     setEmail(null);
     setRole(null);
@@ -202,9 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // ── refreshUser: called by pricing page after payment to force-sync state ──
   const refreshUser = useCallback(async () => {
-    const storedToken = localStorage.getItem("token");
-    if (!storedToken) return;
-    await fetchUserProfile(storedToken);
+    await fetchUserProfile();
   }, [fetchUserProfile]);
 
   return (

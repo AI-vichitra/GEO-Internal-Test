@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { AVAILABLE_LLMS } from "@shared/schema";
 
 import { useAuth } from "@/contexts/AuthContext";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -89,8 +90,7 @@ export function CohortPromptSelector({
   const { data, isLoading, error } = useQuery<CohortData>({
     queryKey: ["cohorts", sessionId],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
-      console.log("🔐 Fetching cohorts with token:", token ? "✅ Present" : "❌ Missing");
+      const token = getAuthToken();
       const headers: Record<string, string> = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
@@ -180,7 +180,7 @@ export function CohortPromptSelector({
 
   const generateCustomMutation = useMutation({
     mutationFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
@@ -207,7 +207,7 @@ export function CohortPromptSelector({
 
   const executeMutation = useMutation({
     mutationFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { Plus, Layout, Calendar, Globe, Briefcase, ChevronRight, Search, Trash2, CalendarClock, Clock, Layers } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { getAuthToken } from "@/lib/queryClient";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -80,9 +81,10 @@ export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWin
     const fetchProjects = async () => {
         setIsLoading(true);
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
             const response = await fetch(`${API_BASE_URL}/api/projects`, {
-                headers: { "Authorization": `Bearer ${token}` }
+                headers: { "Authorization": `Bearer ${token}` },
+                credentials: "include"
             });
             if (response.ok) {
                 const data = await response.json();
@@ -127,10 +129,11 @@ export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWin
         if (!s || s.saving) return;
         patchScheduler(projectId, { saving: true, saved: false });
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
             const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+                credentials: "include",
                 body: JSON.stringify({ is_active: s.is_active, update_frequency: s.update_frequency }),
             });
             if (!res.ok) throw new Error("Failed");
@@ -150,10 +153,11 @@ export function ProjectsWindow({ onSelectProject, onCreateProject }: ProjectsWin
         if (!projectToDelete) return;
 
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
             const response = await fetch(`${API_BASE_URL}/api/projects/${projectToDelete}`, {
                 method: "DELETE",
-                headers: { "Authorization": `Bearer ${token}` }
+                headers: { "Authorization": `Bearer ${token}` },
+                credentials: "include"
             });
 
             if (response.ok) {

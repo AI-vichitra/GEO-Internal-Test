@@ -6,6 +6,7 @@ import {
     Square, Loader2, AlertCircle, FileText, CheckCircle2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -32,10 +33,14 @@ export function SeoAnalyzer() {
 
     const fetchToolUsage = async () => {
         try {
-            const token = localStorage.getItem('token');
-            if (!token) return;
+            const token = getAuthToken();
+            const headers: Record<string, string> = {};
+            if (token) {
+                headers["Authorization"] = `Bearer ${token}`;
+            }
             const res = await fetch(`${API_BASE_URL}/api/tools/usage`, {
-                headers: { "Authorization": `Bearer ${token}` }
+                headers,
+                credentials: "include"
             });
             if (res.ok) {
                 const data = await res.json();
@@ -78,7 +83,7 @@ export function SeoAnalyzer() {
         setResults(null);
 
         try {
-            const token = localStorage.getItem('token');
+            const token = getAuthToken();
             const headers: Record<string, string> = {
                 "Content-Type": "application/json",
             };
@@ -89,6 +94,7 @@ export function SeoAnalyzer() {
             const response = await fetch(`${API_BASE_URL}/api/seo/analyze`, {
                 method: "POST",
                 headers,
+                credentials: "include",
                 body: JSON.stringify({
                     url: formatUrl,
                     skills: selectedSkills

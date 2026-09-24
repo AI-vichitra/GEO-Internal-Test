@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Search, ChevronDown } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -19,7 +20,7 @@ export function BrandSelector({ onBrandSelect, selectedBrand }: BrandSelectorPro
   const { data: brandsData, isLoading } = useQuery({
     queryKey: ["brands"],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const headers: Record<string, string> = {};
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;

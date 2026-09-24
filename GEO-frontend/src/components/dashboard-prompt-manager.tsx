@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { getAuthToken } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card } from "@/components/ui/card";
@@ -93,10 +94,11 @@ export function DashboardPromptManager({
     const fetchCohorts = async () => {
       setLoadingCohorts(true);
       try {
-        const token = localStorage.getItem("token");
+        const token = getAuthToken();
         const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
         const response = await fetch(`${API_BASE_URL}/api/analysis/cohorts/${sessionId}`, {
-          headers: { "Authorization": `Bearer ${token}` }
+          headers: { ...(token ? { "Authorization": `Bearer ${token}` } : {}) },
+          credentials: "include"
         });
 
         if (response.ok) {
@@ -187,14 +189,15 @@ export function DashboardPromptManager({
     
     setIsGeneratingCohort(true);
     try {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
       const response = await fetch(`${API_BASE_URL}/api/analysis/generate-custom-cohort-prompts/${sessionId}`, {
         method: "POST",
         headers: { 
-          "Authorization": `Bearer ${token}`,
+          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
           "Content-Type": "application/json"
         },
+        credentials: "include",
         body: JSON.stringify({
           cohort_name: newCohortName,
           cohort_description: newCohortDescription

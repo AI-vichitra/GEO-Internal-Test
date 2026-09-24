@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CalendarClock, Clock, RefreshCw, CheckCircle2 } from "lucide-react";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -63,9 +64,13 @@ export function SchedulerCard({ projectId }: SchedulerCardProps) {
         const load = async () => {
             setIsLoading(true);
             try {
-                const token = localStorage.getItem("token");
+                const token = getAuthToken();
+                const headers: Record<string, string> = {};
+                if (token) headers["Authorization"] = `Bearer ${token}`;
+
                 const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}`, {
-                    headers: { Authorization: `Bearer ${token}` },
+                    headers,
+                    credentials: "include",
                 });
                 if (!res.ok) return;
                 const data = await res.json();
@@ -89,13 +94,16 @@ export function SchedulerCard({ projectId }: SchedulerCardProps) {
         setIsSaving(true);
         setSavedMsg(null);
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
+            const headers: Record<string, string> = {
+                "Content-Type": "application/json",
+            };
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
             const res = await fetch(`${API_BASE_URL}/api/projects/${projectId}`, {
                 method: "PUT",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
+                headers,
+                credentials: "include",
                 body: JSON.stringify({
                     is_active: state.is_active,
                     update_frequency: state.update_frequency,

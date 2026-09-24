@@ -44,6 +44,7 @@ from fastapi import Header, Cookie
 
 def require_admin(
     authorization: Optional[str] = Header(None),
+    token: Optional[str] = Cookie(None),
     token_cookie: Optional[str] = Cookie(None)
 ) -> Dict[str, Any]:
     """
@@ -51,7 +52,7 @@ def require_admin(
     Always checks real-time database state (never trusts JWT claim alone).
     """
     from app import get_current_user
-    user_id = get_current_user(authorization=authorization, token_cookie=token_cookie)
+    user_id = get_current_user(authorization=authorization, token=token, token_cookie=token_cookie)
 
     user = get_user_by_id(user_id)
     if not user:

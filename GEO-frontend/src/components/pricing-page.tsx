@@ -5,6 +5,7 @@ import { Check, ChevronDown, ChevronUp, Plus, Minus, ArrowRight } from "lucide-r
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
+import { getAuthToken } from "@/lib/queryClient";
 
 interface PricingPageProps {
   onGetStarted: () => void;
@@ -160,19 +161,16 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
     setLoading(planName);
 
     try {
-      const token = localStorage.getItem("token");
-      if (!token) {
-        onGetStarted();
-        return;
-      }
+      const token = getAuthToken();
 
       // ── 1. Create Razorpay order on backend (price calculated server-side) ──
       const response = await fetch(`${API_URL}/api/payments/razorpay/create-order`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
+          ...(token ? { "Authorization": `Bearer ${token}` } : {})
         },
+        credentials: "include",
         body: JSON.stringify({
           plan_name: planName,
           billing_cycle: billingCycle
@@ -197,12 +195,14 @@ export function PricingPage({ onGetStarted, onClose }: PricingPageProps) {
         handler: async function (razorpayResponse: any) {
           // ── 3. Verify payment signature on backend ─────────────────────
           try {
+            const verifyToken = getAuthToken();
             const verifyRes = await fetch(`${API_URL}/api/payments/razorpay/verify-payment`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${localStorage.getItem("token") ?? ""}`
+                ...(verifyToken ? { "Authorization": `Bearer ${verifyToken}` } : {})
               },
+              credentials: "include",
               body: JSON.stringify({
                 razorpay_order_id: razorpayResponse.razorpay_order_id,
                 razorpay_payment_id: razorpayResponse.razorpay_payment_id,

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -19,15 +20,18 @@ export function ReanalyzeButton({
 
   const reanalyzeMutation = useMutation({
     mutationFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(
         `${API_BASE_URL}/api/reanalyze-with-same-prompts/${sessionId}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${token}`
-          },
+          headers,
+          credentials: "include"
         }
       );
       if (!response.ok) {

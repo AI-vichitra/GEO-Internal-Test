@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/select";
 import { Loader2, LayoutGrid } from "lucide-react";
 import type { AnalysisSession } from "@shared/schema";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -22,9 +23,13 @@ export function UserBrandSelector({ currentBrand, onBrandChange }: UserBrandSele
   const { data: analysesData, isLoading: isLoadingAnalyses } = useQuery<{ analyses: AnalysisSession[] }>({
     queryKey: ["/api/recent-analyses"],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(`${API_BASE_URL}/api/recent-analyses`, {
-        headers: { "Authorization": `Bearer ${token}` }
+        headers,
+        credentials: "include"
       });
       if (!response.ok) throw new Error("Failed to fetch recent analyses");
       return response.json();
@@ -34,9 +39,13 @@ export function UserBrandSelector({ currentBrand, onBrandChange }: UserBrandSele
   const { data: projectsData, isLoading: isLoadingProjects } = useQuery<{ projects: any[] }>({
     queryKey: ["/api/projects"],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(`${API_BASE_URL}/api/projects`, {
-        headers: { "Authorization": `Bearer ${token}` }
+        headers,
+        credentials: "include"
       });
       if (!response.ok) throw new Error("Failed to fetch projects");
       return response.json();

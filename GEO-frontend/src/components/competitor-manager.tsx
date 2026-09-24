@@ -5,15 +5,18 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Trash2, Plus, RefreshCw, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
+import { getAuthToken } from "@/lib/queryClient";
+
 // Helper function for API requests
 async function apiRequest(method: string, url: string, body: any) {
-  const token = localStorage.getItem("token");
-  const res = await fetch(process.env.NEXT_PUBLIC_API_URL + url, {
+  const token = getAuthToken();
+  const res = await fetch((process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech") + url, {
     method,
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`
+      ...(token ? { "Authorization": `Bearer ${token}` } : {})
     },
+    credentials: "include",
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error("API Request failed");

@@ -20,6 +20,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { getAuthToken } from "@/lib/queryClient";
 
 interface CitationURL {
     url: string;
@@ -60,7 +61,7 @@ export function CitationAnalytics({ sessionId, brandName }: CitationAnalyticsPro
         const fetchData = async () => {
             try {
                 setLoading(true);
-                const token = localStorage.getItem("token");
+                const token = getAuthToken();
 
                 let url = "";
                 if (brandName) {
@@ -71,10 +72,12 @@ export function CitationAnalytics({ sessionId, brandName }: CitationAnalyticsPro
                     return;
                 }
 
+                const headers: Record<string, string> = {};
+                if (token) headers["Authorization"] = `Bearer ${token}`;
+
                 const response = await fetch(url, {
-                    headers: {
-                        "Authorization": `Bearer ${token}`
-                    }
+                    headers,
+                    credentials: "include"
                 });
 
                 if (!response.ok) throw new Error("Failed to fetch citations");

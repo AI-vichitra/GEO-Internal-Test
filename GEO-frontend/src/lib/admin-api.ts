@@ -1,7 +1,9 @@
+import { getAuthToken } from "@/lib/queryClient";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
 function getAuthHeaders(): Record<string, string> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
+  const token = getAuthToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -19,6 +21,7 @@ export async function adminFetch<T = any>(
   
   const response = await fetch(url, {
     ...options,
+    credentials: "include",
     headers: {
       ...getAuthHeaders(),
       ...(options.headers || {}),

@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 
 import { Header } from "@/components/header";
+import { getAuthToken } from "@/lib/queryClient";
 
 export default function ResultsPage() {
     const params = useParams();
@@ -19,10 +20,14 @@ export default function ResultsPage() {
 
     const handleResultsReady = async (completedSessionId: string) => {
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
             const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
+            const headers: Record<string, string> = {};
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
             const res = await fetch(`${API_BASE_URL}/api/results/${completedSessionId}`, {
-                headers: { "Authorization": `Bearer ${token}` }
+                headers,
+                credentials: "include"
             });
             if (res.ok) {
                 const data = await res.json();

@@ -9,6 +9,7 @@ import {
 } from "recharts";
 import { useQuery } from "@tanstack/react-query";
 import { TrendingUp } from "lucide-react";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -31,13 +32,17 @@ export function DualVisibilityCharts({ brandName, productName, sessionId }: Dual
   const { data: mainHistoryData } = useQuery({
     queryKey: ["main-visibility-history", brandName, productName, sessionId, isProductSpecific],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const endpoint = isProductSpecific
         ? `${API_BASE_URL}/api/visibility-history/brand-product/${encodeURIComponent(brandName)}/${encodeURIComponent(productName)}`
         : `${API_BASE_URL}/api/brand-history/${encodeURIComponent(brandName)}`;
 
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(endpoint, {
-        headers: { "Authorization": `Bearer ${token}` }
+        headers,
+        credentials: "include"
       });
       if (!response.ok) {
         if (response.status === 404) return { history: [] };

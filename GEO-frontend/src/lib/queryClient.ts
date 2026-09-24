@@ -7,12 +7,24 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
+// ─── In-Memory Token Store (SEC-004) ──────────────────────────────────────────
+// Keeps JWT strictly in memory — never exposed to localStorage or document.cookie
+let inMemoryToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  inMemoryToken = token;
+}
+
+export function getAuthToken(): string | null {
+  return inMemoryToken;
+}
+
 export async function apiRequest(
   method: string,
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const token = localStorage.getItem("token");
+  const token = getAuthToken();
   const headers: Record<string, string> = {};
 
   if (data) {
@@ -26,17 +38,12 @@ export async function apiRequest(
   // Prepend API URL if it's a relative path starting with /api to avoid 404s
   let fullUrl = url;
   if (url.startsWith("/api") || url.startsWith("/")) {
-    // Use env var or default to localhost:8000
-    const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://34.123.146.6:8000";
-    // Remove double slashes if any (though nice to have, simple concatenation is usually fine if mindful)
-    // If apiBase ends with / and url starts with /, remove one.
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
     const base = apiBase.endsWith("/") ? apiBase.slice(0, -1) : apiBase;
     const path = url.startsWith("/") ? url : `/${url}`;
     fullUrl = `${base}${path}`;
   }
 
-  // Handle case where url is already absolute (starts with http) - logic above handles relative only if we restricted validation, 
-  // but "startsWith /" captures relative. If it starts with http, it won't be modified unless we check specifically.
   if (url.startsWith("http")) {
     fullUrl = url;
   }
@@ -45,8 +52,7 @@ export async function apiRequest(
     method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
-    // credentials: "include", // CAUTION: credentials: include with CORS requires specific origin, not *. 
-    // Backend is configured for localhost:3000 so this should be fine. 
+    credentials: "include", // Transmit HttpOnly session cookie automatically
   });
 
   await throwIfResNotOk(res);
@@ -59,7 +65,7 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
     async ({ queryKey }) => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
       const headers: Record<string, string> = {};
 
       if (token) {

@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, getAuthToken } from "@/lib/queryClient";
 import { analysisRequestSchema, type AnalysisRequest } from "@shared/schema";
 import { Loader2, ArrowRight, Globe, Sparkles, CheckCircle2, Search, Lock } from "lucide-react";
 
@@ -85,10 +85,11 @@ export function AnalysisForm({ onAnalysisStart }: AnalysisFormProps) {
     mutationFn: async (data: AnalysisRequest) => {
       let projectId = null;
       try {
-        const token = localStorage.getItem("token");
+        const token = getAuthToken();
         const projectResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech"}/api/projects`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          headers: { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) },
+          credentials: "include",
           body: JSON.stringify({
             name: data.brand_name,
             website_url: data.website_url,

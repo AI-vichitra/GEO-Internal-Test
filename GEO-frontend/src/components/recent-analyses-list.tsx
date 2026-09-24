@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Calendar, Package, Globe, Clock } from "lucide-react";
 import { Loader2 } from "lucide-react";
+import { getAuthToken } from "@/lib/queryClient";
 
 interface RecentAnalysesListProps {
   onAnalysisSelect: (sessionId: string, brandName: string) => void;
@@ -23,11 +24,13 @@ export function RecentAnalysesList({ onAnalysisSelect }: RecentAnalysesListProps
   const { data, isLoading, error } = useQuery<{ total: number; analyses: AnalysisSession[] }>({
     queryKey: ["/api/recent-analyses"],
     queryFn: async () => {
-      const token = localStorage.getItem("token");
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(`${API_BASE_URL}/api/recent-analyses`, {
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
+        headers,
+        credentials: "include"
       }); // ✅ FIX: Use absolute URL
       if (!response.ok) {
         throw new Error(`Failed to fetch recent analyses: ${response.status}`);

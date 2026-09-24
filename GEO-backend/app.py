@@ -411,60 +411,67 @@ def verify_jwt_token(token: str) -> Optional[str]:
         logger.error(f"Unexpected error decoding JWT: {str(e)}")
         return None
 
+def set_auth_cookie(response: Response, token: str):
+    """Sets secure HttpOnly cookie for session management (SEC-004)."""
+    is_prod = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+    response.set_cookie(
+        key="token",
+        value=token,
+        httponly=True,
+        secure=is_prod,
+        samesite="lax",
+        max_age=7 * 86400,
+        path="/"
+    )
+
+def clear_auth_cookie(response: Response):
+    """Clears HttpOnly auth cookie on logout (SEC-004)."""
+    response.delete_cookie(key="token", path="/")
+
 from fastapi import Cookie
 
-def get_current_user(authorization: Optional[str] = Header(None), token_cookie: Optional[str] = Cookie(None)) -> str:
-    """Dependency to get current authenticated user. Accepts Authorization header or a 'token' cookie as fallback."""
-    logger.info(f"Checking auth - Header present: {bool(authorization)}; Cookie token present: {bool(token_cookie)}")
+def get_current_user(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Cookie(None),
+    token_cookie: Optional[str] = Cookie(None)
+) -> str:
+    """Dependency to get current authenticated user. Accepts Authorization header or 'token'/'token_cookie' HttpOnly cookie."""
+    cookie_token = token or token_cookie
 
-    # If no Authorization header is provided but we have a token cookie, construct a Bearer header
-    if not authorization and token_cookie:
-        authorization = f"Bearer {token_cookie}"
+    # If authorization header is absent, empty, or dummy "Bearer null"/"Bearer undefined", fall back to cookie
+    if not authorization or authorization.strip() in ("Bearer", "Bearer null", "Bearer undefined"):
+        if cookie_token:
+            authorization = f"Bearer {cookie_token}"
 
     if not authorization:
-        logger.info("Authorization missing in both header and cookie")
         raise HTTPException(status_code=401, detail="Authorization header missing")
 
-    # Try to extract raw token for a masked preview (do NOT log the full token)
-    raw_token = None
     try:
         parts = authorization.split()
         if len(parts) != 2:
-            logger.info("Invalid auth header format")
             raise HTTPException(status_code=401, detail="Invalid authorization header")
 
-        scheme, token = parts
+        scheme, raw_token = parts
         if scheme.lower() != "bearer":
-            logger.info(f"Invalid auth scheme: {scheme}")
             raise HTTPException(status_code=401, detail="Invalid authentication scheme")
 
-        raw_token = token
-    except ValueError:
-        logger.info("Invalid authorization header (ValueError)")
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
+        user_id = verify_jwt_token(raw_token)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # Masked preview for debugging (length & format) - keeps token secret
-    if raw_token:
-        preview = (raw_token[:10] + '...') if len(raw_token) > 16 else raw_token
-        logger.info(f"Auth token preview: {preview}; length={len(raw_token)}; dots={raw_token.count('.')}")
+        # Real-time DB suspension check (defense in depth)
+        from services.database_manager import get_user_by_id
+        user_row = get_user_by_id(str(user_id))
+        if user_row and user_row.get("is_suspended"):
+            logger.warning(f"🚫 Suspended user {user_id} attempted access")
+            raise HTTPException(status_code=403, detail="Account is suspended. Please contact support.")
 
-    # Sanitize token and verify
-    raw_token = raw_token.strip().strip('"').strip("'") if raw_token else raw_token
-
-    user_id = verify_jwt_token(raw_token)
-    logger.info(f"Token verification result: {'valid' if user_id else 'invalid/expired'}")
-
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-
-    # Real-time DB suspension check (defense in depth)
-    from services.database_manager import get_user_by_id
-    user_row = get_user_by_id(user_id)
-    if user_row and user_row.get("is_suspended"):
-        logger.warning(f"🚫 Suspended user {user_id} attempted access")
-        raise HTTPException(status_code=403, detail="Account is suspended. Please contact support.")
-
-    return user_id
+        return str(user_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Auth error: {str(e)}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
 def verify_session_owner(session_id: str, user_id: str) -> dict:
     """
@@ -485,8 +492,8 @@ def verify_session_owner(session_id: str, user_id: str) -> dict:
 
 # ============= AUTHENTICATION ENDPOINTS =============
 @app.post("/api/auth/signup")
-async def signup(request: SignUpRequest):
-    """Register a new user"""
+async def signup(request: SignUpRequest, response: Response):
+    """Register a new user and set HttpOnly session cookie (SEC-004)"""
     try:
         if not request.email or not request.password:
             raise HTTPException(status_code=400, detail="Email and password are required")
@@ -506,8 +513,9 @@ async def signup(request: SignUpRequest):
         if not user_id:
             raise HTTPException(status_code=500, detail="Failed to create user")
         
-        # Create JWT token
+        # Create JWT token and set HttpOnly session cookie
         token = create_jwt_token(user_id)
+        set_auth_cookie(response, token)
         
         # Fetch subscription status and plan limits to return alongside token
         sub_status = get_subscription_status(user_id)
@@ -532,8 +540,8 @@ async def signup(request: SignUpRequest):
         raise HTTPException(status_code=500, detail=f"Signup failed: {str(e)}")
 
 @app.post("/api/auth/login")
-async def login(request: LoginRequest):
-    """Login user and return JWT token"""
+async def login(request: LoginRequest, response: Response):
+    """Login user, return JWT token, and set HttpOnly session cookie (SEC-004)"""
     try:
         if not request.email or not request.password:
             raise HTTPException(status_code=400, detail="Email and password are required")
@@ -559,8 +567,9 @@ async def login(request: LoginRequest):
             user_role = "super_admin"
             logger.info(f"👑 Bootstrapped super_admin role for {request.email}")
 
-        # Create JWT token with role
+        # Create JWT token with role and set HttpOnly session cookie
         token = create_jwt_token(user['id'], role=user_role)
+        set_auth_cookie(response, token)
 
         # Fetch subscription status and plan limits to return alongside token
         sub_status = get_subscription_status(user['id'])
@@ -585,8 +594,8 @@ async def login(request: LoginRequest):
         raise HTTPException(status_code=500, detail=f"Login failed: {str(e)}")
 
 @app.post("/api/auth/google")
-async def google_auth(request: GoogleAuthRequest):
-    """Verify Google token and login/signup user"""
+async def google_auth(request: GoogleAuthRequest, response: Response):
+    """Verify Google token, login/signup user, and set HttpOnly session cookie (SEC-004)"""
     try:
         # Verify the Google token
         client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -626,8 +635,9 @@ async def google_auth(request: GoogleAuthRequest):
         
         user_role = (user.get("role") or "user").lower()
 
-        # Create JWT token
+        # Create JWT token and set HttpOnly session cookie
         token = create_jwt_token(user['id'], role=user_role)
+        set_auth_cookie(response, token)
 
         # Fetch subscription status and plan limits to return alongside token
         sub_status = get_subscription_status(user['id'])
@@ -652,18 +662,35 @@ async def google_auth(request: GoogleAuthRequest):
         raise HTTPException(status_code=500, detail=f"Google authentication failed: {str(e)}")
 
 
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    """Clear HttpOnly session cookie on logout (SEC-004)"""
+    clear_auth_cookie(response)
+    return {"status": "success", "message": "Logged out successfully"}
+
+
 @app.get("/api/auth/me")
-async def get_current_user_info(user_id: str = Depends(get_current_user)):
-    """Get current user information"""
+async def get_current_user_info(response: Response, user_id: str = Depends(get_current_user)):
+    """Get current user information and return active token for in-memory client state (SEC-004)"""
     try:
         user = get_user_by_id(user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
+        # Issue fresh in-memory token and refresh HttpOnly cookie
+        token = create_jwt_token(user_id, role=user.get("role", "user"))
+        set_auth_cookie(response, token)
+
         return {
             "status": "success",
-            "user": user
+            "user": user,
+            "token": token
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting user info: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve user info")
     except Exception as e:
         logger.error(f"Error getting user info: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve user info")

@@ -1,5 +1,6 @@
 import { Card } from "@/components/ui/card";
 import { useEffect, useState } from "react";
+import { getAuthToken } from "@/lib/queryClient";
 import {
   LineChart,
   Line,
@@ -48,13 +49,15 @@ export function VisibilityChart({
       try {
         console.log(`Fetching brand history for: ${displayBrandName}`);
 
-        const token = localStorage.getItem("token");
+        const token = getAuthToken();
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
         const response = await fetch(
           `${API_BASE_URL}/api/brand-history/${encodeURIComponent(displayBrandName)}`,
           {
-            headers: {
-              "Authorization": `Bearer ${token}`
-            }
+            headers,
+            credentials: "include"
           }
         );
 

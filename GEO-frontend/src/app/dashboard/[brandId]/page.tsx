@@ -9,6 +9,7 @@ import { CitationAnalytics } from "@/components/citation-analytics";
 import { Users } from "lucide-react";
 import type { AnalysisResults as AnalysisResultsType } from "@shared/schema";
 import { useAuth } from "@/contexts/AuthContext";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -36,7 +37,10 @@ export default function BrandDashboard() {
             setIsLoading(true);
             setError(null);
             try {
-                const token = localStorage.getItem("token");
+                const token = getAuthToken();
+                const headers: Record<string, string> = {};
+                if (token) headers["Authorization"] = `Bearer ${token}`;
+
                 let resolvedBrandName = decodeURIComponent(brandName);
 
                 // Detect if brandName is a UUID (Project ID)
@@ -44,7 +48,8 @@ export default function BrandDashboard() {
 
                     // It's a project ID, resolve it to a brand name first
                     const projectRes = await fetch(`${API_BASE_URL}/api/projects/${resolvedBrandName}`, {
-                        headers: { "Authorization": `Bearer ${token}` }
+                        headers,
+                        credentials: "include"
                     });
                     if (projectRes.ok) {
                         const projectData = await projectRes.json();
@@ -55,7 +60,8 @@ export default function BrandDashboard() {
 
                 // 1. Get recent analyses to find the latest for this brand
                 const response = await fetch(`${API_BASE_URL}/api/recent-analyses`, {
-                    headers: { "Authorization": `Bearer ${token}` }
+                    headers,
+                    credentials: "include"
                 });
                 if (!response.ok) throw new Error("Failed to fetch sessions");
                 const data = await response.json();
@@ -69,7 +75,8 @@ export default function BrandDashboard() {
                     setSessionId(latestSession.session_id);
                     // 2. Load results for this session
                     const resultsRes = await fetch(`${API_BASE_URL}/api/results/${latestSession.session_id}`, {
-                        headers: { "Authorization": `Bearer ${token}` }
+                        headers,
+                        credentials: "include"
                     });
                     if (!resultsRes.ok) throw new Error("Failed to load results");
                     const resultsData = await resultsRes.json();
@@ -112,13 +119,16 @@ export default function BrandDashboard() {
         if (!sessionId) return;
         setIsReanalyzing(true);
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
+            const headers: Record<string, string> = {
+                'Content-Type': 'application/json',
+            };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
             const response = await fetch(`${API_BASE_URL}/api/analysis/fork-session?parent_session_id=${sessionId}`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
+                headers,
+                credentials: "include",
                 body: JSON.stringify({ prompts: selectedPrompts, llms: selectedLLMs })
             });
 

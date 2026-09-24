@@ -7,6 +7,7 @@ import {
     Sparkles, Info, Search, RotateCcw, Eye, Code, X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getAuthToken } from "@/lib/queryClient";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.optimiseurbrand.tech";
 
@@ -76,10 +77,12 @@ export function LlmsTxtGenerator() {
     // Fetch usage limits
     const fetchToolUsage = async () => {
         try {
-            const token = localStorage.getItem('token');
-            if (!token) return;
+            const token = getAuthToken();
+            const headers: Record<string, string> = {};
+            if (token) headers["Authorization"] = `Bearer ${token}`;
             const res = await fetch(`${API_BASE_URL}/api/tools/usage`, {
-                headers: { "Authorization": `Bearer ${token}` }
+                headers,
+                credentials: "include"
             });
             if (res.ok) {
                 const data = await res.json();
@@ -111,13 +114,16 @@ export function LlmsTxtGenerator() {
         setCopied(false);
 
         try {
-            const token = localStorage.getItem("token");
+            const token = getAuthToken();
+            const headers: Record<string, string> = {
+                "Content-Type": "application/json",
+            };
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
             const res = await fetch(`${API_BASE_URL}/api/llms-txt/generate`, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
+                headers,
+                credentials: "include",
                 body: JSON.stringify({ url: url.trim() }),
             });
 
@@ -132,9 +138,15 @@ export function LlmsTxtGenerator() {
             // Start polling
             pollingRef.current = setInterval(async () => {
                 try {
+                    const statusHeaders: Record<string, string> = {};
+                    if (token) statusHeaders["Authorization"] = `Bearer ${token}`;
+
                     const statusRes = await fetch(
                         `${API_BASE_URL}/api/llms-txt/status/${taskId}`,
-                        { headers: { Authorization: `Bearer ${token}` } }
+                        {
+                            headers: statusHeaders,
+                            credentials: "include"
+                        }
                     );
 
                     if (!statusRes.ok) return;
